@@ -1,6 +1,6 @@
 [project]
 name = "speech-mcp"
-version = "0.4.0"
+version = "0.4.1"
 description = "Speech MCP Server with command-line interface and Kokoro TTS support"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -36,19 +36,11 @@ all = [
 [project.scripts]
 speech-mcp = "speech_mcp:main"
 
-[tool.hatch.build]
-packages = ["src/speech_mcp"]
-include = ["src/speech_mcp/resources/audio/*.wav"]
+[tool.hatch]
+packages = ["src"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/speech_mcp"]
-include = ["src/speech_mcp/resources/audio/*.wav"]
-
-[tool.hatch.build.targets.sdist]
-include = [
-    "src/speech_mcp/**/*.py",
-    "src/speech_mcp/resources/audio/*.wav",
-]
+packages = ["src"]
 
 [build-system]
 requires = ["hatchling"]
