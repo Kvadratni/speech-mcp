@@ -21,7 +21,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-
 ja = [
     "misaki[ja]"       # Japanese support for Kokoro
 ]
@@ -34,6 +33,7 @@ all = [
 
 [project.scripts]
 speech-mcp = "speech_mcp.__main__:main"
+speech-mcp-check = "speech_mcp.install_check:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -50,3 +50,6 @@ packages = ["src/speech_mcp"]
 
 [tool.hatch.build.targets.wheel.sources]
 "src" = ""
+
+[tool.hatch.build.hooks.custom]
+path = "src/speech_mcp/build_hook.py"

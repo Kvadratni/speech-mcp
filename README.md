@@ -19,6 +19,34 @@ Speech MCP provides a voice interface for Goose, allowing users to interact thro
 - **Silence Detection**: Automatically stops recording when the user stops speaking
 - **Robust Error Handling**: Graceful recovery from common failure modes
 
+## System Requirements
+
+Before installing, ensure you have the required system dependencies:
+
+### macOS
+```bash
+# Install Homebrew if not already installed
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+# Install PortAudio (required for PyAudio)
+brew install portaudio
+```
+
+### Linux (Debian/Ubuntu)
+```bash
+sudo apt-get update
+sudo apt-get install python3-dev portaudio19-dev
+```
+
+### Linux (Fedora)
+```bash
+sudo dnf install python3-devel portaudio-devel
+```
+
+### Windows
+- No additional system dependencies required
+- PyAudio wheels are available for direct installation
+
 ## Installation
 
 ### Option 1: Quick Install (One-Click)
@@ -32,6 +60,9 @@ Click the link below if you have Goose installed:
 Start Goose with your extension enabled:
 
 ```bash
+# First, check system dependencies
+speech-mcp-check
+
 # If you installed via PyPI
 goose session --with-extension "speech-mcp"
 
@@ -51,13 +82,25 @@ goose session --with-extension "python -m speech_mcp"
 ### Option 4: Manual Installation
 
 1. Clone this repository
-2. Install dependencies:
-   ```
+2. Install system dependencies (see System Requirements above)
+3. Install Python dependencies:
+   ```bash
+   # Check system dependencies first
+   python -m speech_mcp.install_check
+   
+   # Then install the package
    uv pip install -e .
    ```
 
 ## Dependencies
 
+### System Dependencies
+- PortAudio (required for audio capture)
+  - macOS: Install via `brew install portaudio`
+  - Linux: Install development packages (see System Requirements)
+  - Windows: No additional requirements
+
+### Python Dependencies
 - Python 3.10+
 - PyAudio (for audio capture)
 - faster-whisper (for speech-to-text)
@@ -111,13 +154,28 @@ reply("I understand your follow-up question. Here's my answer.")
 
 ## Troubleshooting
 
-If you encounter issues with the extension freezing or not responding:
+### Common Issues
 
-1. **Check the logs**: Look at the log files in `src/speech_mcp/` for detailed error messages.
-2. **Reset the state**: If the extension seems stuck, try deleting `src/speech_mcp/speech_state.json` or setting all states to `false`.
-3. **Use the direct command**: Instead of `uv run speech-mcp`, use the installed package with `speech-mcp` directly.
-4. **Check audio devices**: Ensure your microphone is properly configured and accessible to Python.
-5. **Verify dependencies**: Make sure all required dependencies are installed correctly.
+1. **PyAudio Installation Fails**
+   - Make sure you've installed the system dependencies first (see System Requirements)
+   - On macOS: Run `brew install portaudio` before installing PyAudio
+   - On Linux: Install the appropriate development packages for your distribution
+
+2. **Audio Device Issues**
+   - Check if your microphone is properly connected and recognized
+   - Verify microphone permissions in your system settings
+   - Try running `python -m sounddevice` to list available audio devices
+
+3. **Extension Freezing**
+   - Check the logs in `src/speech_mcp/` for detailed error messages
+   - Try deleting `src/speech_mcp/speech_state.json` or setting all states to `false`
+   - Use `speech-mcp` directly instead of `uv run speech-mcp`
+
+### Log Files
+Look for detailed error messages in:
+- `src/speech_mcp/speech-mcp.log`
+- `src/speech_mcp/speech-mcp-server.log`
+- `src/speech_mcp/speech-mcp-ui.log`
 
 ## Recent Fixes
 
@@ -128,6 +186,7 @@ If you encounter issues with the extension freezing or not responding:
 - **State consistency**: Added state reset mechanisms to avoid getting stuck
 - **Fallback transcription**: Added emergency transcription when UI process fails
 - **Debugging output**: Enhanced logging and console output for troubleshooting
+- **Installation checks**: Added system dependency verification during installation
 
 ## Technical Details
 
