@@ -870,17 +870,21 @@ def _full_panel_html() -> str:
         "last_transcript": (s.get("last_transcript") or "").replace("<", "&lt;"),
         "last_response": (s.get("last_response") or "").replace("<", "&lt;"),
     }
-    tpl = pkg.files("speech_mcp.resources.ui").joinpath("panel.html").read_text(encoding="utf-8")
-    css = pkg.files("speech_mcp.resources.ui").joinpath("panel.css").read_text(encoding="utf-8")
-    js = pkg.files("speech_mcp.resources.ui").joinpath("panel.js").read_text(encoding="utf-8")
-    return (
-        tpl.replace("{{CSS}}", f"<style>{css}</style>")
-           .replace("{{JS}}", f"<script>{js}</script>")
-           .replace("{{listening}}", v["listening"]) 
-           .replace("{{speaking}}", v["speaking"]) 
-           .replace("{{voice_pref}}", v["voice_pref"]) 
-           .replace("{{last_transcript}}", v["last_transcript"]) 
-           .replace("{{last_response}}", v["last_response"]) )
+    # Prefer bundled HTML if present, else inject CSS/JS into template
+    bundle_path = pkg.files("speech_mcp.resources.ui").joinpath("panel.bundled.html")
+    if bundle_path.is_file():
+        html = bundle_path.read_text(encoding="utf-8")
+    else:
+        tpl = pkg.files("speech_mcp.resources.ui").joinpath("panel.html").read_text(encoding="utf-8")
+        css = pkg.files("speech_mcp.resources.ui").joinpath("panel.css").read_text(encoding="utf-8")
+        js = pkg.files("speech_mcp.resources.ui").joinpath("panel.js").read_text(encoding="utf-8")
+        html = tpl.replace("{{CSS}}", f"<style>{css}</style>").replace("{{JS}}", f"<script>{js}</script>")
+    return (html
+        .replace("{{listening}}", v["listening"]) 
+        .replace("{{speaking}}", v["speaking"]) 
+        .replace("{{voice_pref}}", v["voice_pref"]) 
+        .replace("{{last_transcript}}", v["last_transcript"]) 
+        .replace("{{last_response}}", v["last_response"]) )
 
 def _render_status_html() -> str:
     """Render current status from state into a small HTML panel."""

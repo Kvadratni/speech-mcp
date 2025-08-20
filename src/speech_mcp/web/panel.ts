@@ -19,6 +19,10 @@ window.onVoiceChange = (voice: string) => {
   const k = document.getElementById('kpiVoice'); if (k) k.textContent = voice;
 };
 // @ts-ignore
+window.onThemeChange = (theme: string) => {
+  applyTheme(theme);
+};
+// @ts-ignore
 window.promptSpeak = () => {
   const text = window.prompt('Text to speak');
   if (text && text.trim()) {
@@ -63,5 +67,28 @@ const initS = (document.getElementById('kpiSpeaking')?.textContent || 'false') =
 window.setListening(initL);
 // @ts-ignore
 window.setSpeaking(initS);
+
+function applyTheme(theme: string) {
+  const root = document.documentElement;
+  const themes: Record<string, Record<string, string>> = {
+    midnight: {
+      '--bg': '#0a0f1e', '--panel': '#111729', '--text': '#e8ecf1', '--muted': '#99a3b3', '--border': '#20283b',
+      '--accent': '#6ea8fe', '--ok': '#38e1a8', '--dim': '#56607a'
+    },
+    glacier: {
+      '--bg': '#f6f7fb', '--panel': '#ffffff', '--text': '#0d1220', '--muted': '#5c6785', '--border': '#e4e8f0',
+      '--accent': '#3b82f6', '--ok': '#10b981', '--dim': '#9aa3b2'
+    },
+    emerald: {
+      '--bg': '#0c1210', '--panel': '#111814', '--text': '#e7f0eb', '--muted': '#97a39c', '--border': '#1d2a23',
+      '--accent': '#34d399', '--ok': '#22c55e', '--dim': '#5a6a61'
+    }
+  };
+  const t = themes[theme] || themes.midnight;
+  Object.entries(t).forEach(([k, v]) => root.style.setProperty(k, v));
+}
+
+// pick a default theme
+applyTheme('midnight');
 
 

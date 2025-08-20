@@ -1,0 +1,85 @@
+<!-- Panel template; placeholders injected by Python loader -->
+<style>:root {
+  --bg: #0b1220;
+  --panel: #0f172a;
+  --text: #e5e7eb;
+  --muted: #94a3b8;
+  --border: #1f2937;
+}
+.wrap { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; color: var(--text); }
+.card { border: 1px solid var(--border); border-radius: 16px; padding: 16px; background: linear-gradient(180deg, rgba(255,255,255,.03), rgba(255,255,255,.01)); box-shadow: 0 8px 24px rgba(0,0,0,.35); }
+.header { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; }
+.title { font-size: 18px; font-weight: 700; }
+.sub { color: var(--muted); font-size: 13px; }
+.row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:8px; }
+.btn { appearance:none; border:none; border-radius:10px; padding:10px 14px; cursor:pointer; color:#fff; font-weight:600; letter-spacing:.2px; box-shadow: inset 0 0 0 1px rgba(255,255,255,.05), 0 6px 16px rgba(0,0,0,.25); transition: transform .06s ease, filter .2s ease; }
+.btn:active { transform: translateY(1px); filter: saturate(1.1); }
+.btn-primary { background: linear-gradient(135deg, #6366f1, #4338ca); }
+.btn-ok { background: linear-gradient(135deg, #22c55e, #16a34a); }
+.btn-dim { background: linear-gradient(135deg, #6b7280, #4b5563); }
+.select { background:#0b1220; color:var(--text); border:1px solid var(--border); border-radius:10px; padding:8px 10px; min-width:220px; }
+.grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:14px; margin-top:14px; }
+.box { background:#0b1220; border:1px solid var(--border); border-radius:12px; padding:12px; min-height:60px; }
+.label { color:var(--muted); font-size:12px; margin-bottom:6px; }
+.kpi { font-size:14px; line-height:1.6; }
+.pre { white-space:pre-wrap; color:#cbd5e1; font-size:13px; margin:0; }
+.waves { display:flex; gap:4px; align-items:flex-end; height:36px; padding:6px; border-radius:10px; border:1px solid var(--border); background:#0b1220; transition: opacity .25s ease; }
+.bar { width:6px; background: linear-gradient(180deg, #60a5fa, #2563eb); border-radius:4px; animation: eq 1.2s ease-in-out infinite; opacity:.95; }
+.bar:nth-child(2){ animation-delay: .08s; } .bar:nth-child(3){ animation-delay: .16s; } .bar:nth-child(4){ animation-delay: .24s; } .bar:nth-child(5){ animation-delay: .32s; } .bar:nth-child(6){ animation-delay: .40s; } .bar:nth-child(7){ animation-delay: .48s; } .bar:nth-child(8){ animation-delay: .56s; } .bar:nth-child(9){ animation-delay: .64s; } .bar:nth-child(10){ animation-delay: .72s; } .bar:nth-child(11){ animation-delay: .80s; } .bar:nth-child(12){ animation-delay: .88s; }
+@keyframes eq { 0%, 100% { height: 6px; } 50% { height: 30px; } }
+
+</style>
+<div class="wrap">
+  <div class="card">
+    <div class="header">
+      <div>
+        <div class="title">Speech Console</div>
+        <div class="sub">Controls and live status for listening/speaking with voice selection.</div>
+      </div>
+    </div>
+    <div class="row">
+      <button class="btn btn-primary" onclick="sendIntent('start_listening', {})">Start Listening</button>
+      <button class="btn btn-ok" onclick="promptSpeak()">Speak Text…</button>
+      <button class="btn btn-dim" onclick="sendIntent('stop', {})">Stop</button>
+      <select id="voiceSelect" class="select" onchange="onVoiceChange(this.value)">
+        <option value="af_heart">af_heart (default)</option>
+        <option value="am_michael">am_michael</option>
+        <option value="bm_daniel">bm_daniel</option>
+        <option value="bf_emma">bf_emma</option>
+        <option value="ff_siwis">ff_siwis</option>
+      </select>
+    </div>
+    <div class="grid">
+      <div>
+        <div class="label">Listening</div>
+        <div id="listenWaves" class="waves"></div>
+      </div>
+      <div>
+        <div class="label">Speaking</div>
+        <div id="speakWaves" class="waves"></div>
+      </div>
+    </div>
+    <div class="grid">
+      <div>
+        <div class="label">Status</div>
+        <div class="box kpi">
+          <div><strong>Listening:</strong> <span id="kpiListening">{{listening}}</span></div>
+          <div><strong>Speaking:</strong> <span id="kpiSpeaking">{{speaking}}</span></div>
+          <div><strong>Voice:</strong> <span id="kpiVoice">{{voice_pref}}</span></div>
+        </div>
+      </div>
+      <div>
+        <div class="label">Last transcript</div>
+        <div class="box"><pre class="pre" id="lastTranscript">{{last_transcript}}</pre></div>
+      </div>
+      <div>
+        <div class="label">Last response</div>
+        <div class="box"><pre class="pre" id="lastResponse">{{last_response}}</pre></div>
+      </div>
+    </div>
+    <div id="uiStatus" class="sub" style="margin-top:10px;"></div>
+  </div>
+  <script>"use strict";(()=>{function s(e,t={}){let n=document.getElementById("uiStatus");n&&(n.textContent=`Intent: ${e} \u2014 ${JSON.stringify(t)}`),window.parent&&window.parent.postMessage({type:"intent",payload:{intent:e,params:t}},"*")}window.sendIntent=(e,t={})=>{s(e,t),e==="start_listening"&&(setListening(!0),setSpeaking(!1)),e==="stop"&&(setListening(!1),setSpeaking(!1))};window.onVoiceChange=e=>{s("set_voice",{voice:e});let t=document.getElementById("kpiVoice");t&&(t.textContent=e)};window.promptSpeak=()=>{let e=window.prompt("Text to speak");if(e&&e.trim()){setSpeaking(!0),setListening(!1);let t=document.getElementById("lastResponse");t&&(t.textContent=e.trim()),s("speak",{text:e.trim()}),setTimeout(()=>setSpeaking(!1),1600)}};function i(e){if(e){e.innerHTML="";for(let t=0;t<12;t++){let n=document.createElement("div");n.className="bar",e.appendChild(n)}}}window.setListening=e=>{let t=document.getElementById("kpiListening");t&&(t.textContent=e?"true":"false");let n=document.getElementById("listenWaves");n&&(n.style.opacity=e?"1":".35")};window.setSpeaking=e=>{let t=document.getElementById("kpiSpeaking");t&&(t.textContent=e?"true":"false");let n=document.getElementById("speakWaves");n&&(n.style.opacity=e?"1":".35")};i(document.getElementById("listenWaves"));i(document.getElementById("speakWaves"));var o=(document.getElementById("kpiListening")?.textContent||"false")==="true",a=(document.getElementById("kpiSpeaking")?.textContent||"false")==="true";window.setListening(o);window.setSpeaking(a);})();
+</script>
+</div>
+
