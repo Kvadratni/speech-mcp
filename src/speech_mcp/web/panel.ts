@@ -89,6 +89,33 @@ function applyTheme(theme: string) {
 }
 
 // pick a default theme
-applyTheme('midnight');
+detectAndApplySystemTheme();
+
+function detectAndApplySystemTheme() {
+  const prefersDark = typeof window.matchMedia === 'function' && window.matchMedia('(prefers-color-scheme: dark)').matches;
+  const theme = prefersDark ? 'midnight' : 'glacier';
+  applyTheme(theme);
+  const sel = document.getElementById('themeSelect') as HTMLSelectElement | null;
+  if (sel) sel.value = theme;
+  // Watch for changes
+  if (typeof window.matchMedia === 'function') {
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    if ('addEventListener' in mq) {
+      mq.addEventListener('change', ev => {
+        const t = ev.matches ? 'midnight' : 'glacier';
+        applyTheme(t);
+        const s = document.getElementById('themeSelect') as HTMLSelectElement | null; if (s) s.value = t;
+      });
+    } else if ('addListener' in mq) {
+      // Safari
+      // @ts-ignore
+      mq.addListener((ev: MediaQueryListEvent) => {
+        const t = ev.matches ? 'midnight' : 'glacier';
+        applyTheme(t);
+        const s = document.getElementById('themeSelect') as HTMLSelectElement | null; if (s) s.value = t;
+      });
+    }
+  }
+}
 
 
