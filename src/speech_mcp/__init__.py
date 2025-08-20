@@ -2,9 +2,8 @@ import argparse
 import sys
 import os
 import signal
-import atexit
 import faulthandler
-from .server import mcp, cleanup_ui_process
+from .server import mcp
 from speech_mcp.utils.logger import get_logger
 
 # Get a logger for this module
@@ -12,9 +11,6 @@ logger = get_logger(__name__)
 
 # Enable faulthandler to help debug segfaults and deadlocks
 faulthandler.enable()
-
-# Ensure UI process is cleaned up on exit
-atexit.register(cleanup_ui_process)
 
 # Handle signals to ensure clean shutdown
 def signal_handler(sig, frame):
@@ -24,8 +20,7 @@ def signal_handler(sig, frame):
     # Dump stack traces to help identify where threads might be stuck
     faulthandler.dump_traceback(file=sys.stderr)
     
-    # Clean up
-    cleanup_ui_process()
+    # Exit
     sys.exit(0)
 
 signal.signal(signal.SIGINT, signal_handler)

@@ -14,7 +14,7 @@ Speech MCP provides a voice interface for [Goose](https://github.com/block/goose
 - Real-time audio processing for speech recognition
 - Local speech-to-text using faster-whisper (a faster implementation of OpenAI's Whisper model)
 - High-quality text-to-speech with multiple voice options
-- Modern PyQt-based UI with audio visualization
+- Compatible with external MCP UI clients for visualization
 - Simple command-line interface for voice interaction
 
 ## Features
@@ -106,7 +106,7 @@ goose session --with-extension "python -m speech_mcp"
 ## Dependencies
 
 - Python 3.10+
-- PyQt5 (for modern UI)
+// MCP UI clients are external apps; no internal UI toolkit required
 - PyAudio (for audio capture)
 - faster-whisper (for speech-to-text)
 - NumPy (for audio processing)
@@ -299,16 +299,9 @@ To use this MCP with Goose, simply ask Goose to talk to you or start a voice con
 
 No need to call specific functions or use special commands - just ask Goose to talk and start speaking naturally.
 
-## UI Features
+## UI
 
-The new PyQt-based UI includes:
-
-- **Modern Dark Theme**: Sleek, professional appearance
-- **Audio Visualization**: Dynamic visualization of audio input
-- **Voice Selection**: Choose from 54+ voice options
-- **Voice Persistence**: Your voice preference is saved between sessions
-- **Animated Effects**: Smooth animations and visual feedback
-- **Status Indicators**: Clear indication of system state (ready, listening, processing)
+Use an external MCP UI client to visualize microphone status and control interactions. For example, see the demo server and client patterns in `mcp-ui`'s example: `python_server_demo.py` ([link](`https://github.com/yannj-fr/mcp-ui/blob/feat/python-client-sdk/examples/python-server-demo/python_server_demo.py`)).
 
 ## Configuration
 

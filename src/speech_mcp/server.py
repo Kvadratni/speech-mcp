@@ -7,7 +7,7 @@ import tempfile
 import subprocess
 import psutil
 import importlib.util
-from typing import Dict, List, Union, Optional, Callable
+from typing import Dict, List, Union, Optional, Callable, Any
 from pathlib import Path
 import numpy as np
 import soundfile as sf
@@ -15,7 +15,8 @@ import soundfile as sf
 from mcp.server.fastmcp import FastMCP
 from mcp.shared.exceptions import McpError
 from mcp.types import ErrorData, INTERNAL_ERROR, INVALID_PARAMS
-
+from mcp_ui_server import create_UIResource
+from mcp_ui_server.core import UIResource
 # Import the centralized logger
 from speech_mcp.utils.logger import get_logger
 
@@ -25,8 +26,7 @@ logger = get_logger(__name__, component="server")
 # Import centralized constants
 from speech_mcp.constants import (
     SERVER_LOG_FILE,
-    TRANSCRIPTION_FILE, RESPONSE_FILE, COMMAND_FILE,
-    CMD_LISTEN, CMD_SPEAK, CMD_IDLE, CMD_UI_READY, CMD_UI_CLOSED,
+    TRANSCRIPTION_FILE,
     SPEECH_TIMEOUT, ENV_TTS_VOICE
 )
 
@@ -140,29 +140,7 @@ def save_speech_state(state, create_response_file=False):
     try:
         # Update state in StateManager
         state_manager.update_state(state, persist=True)
-        
-        # Only create response file if specifically requested
-        if create_response_file:
-            # Create or update response file for UI communication
-            # This helps ensure the UI is properly notified of state changes
-            if state.get("speaking", False):
-                # If speaking, write the response to the file for the UI to pick up
-                logger.debug(f"Creating response file with text: {state.get('last_response', '')[:30]}...")
-                with open(RESPONSE_FILE, 'w') as f:
-                    f.write(state.get("last_response", ""))
-        
-        # Create a special command file to signal state changes to the UI
-        command = ""
-        if state.get("listening", False):
-            command = CMD_LISTEN
-        elif state.get("speaking", False):
-            command = CMD_SPEAK
-        else:
-            command = CMD_IDLE
-        
-        logger.debug(f"Writing command {command} to {COMMAND_FILE}")
-        with open(COMMAND_FILE, 'w') as f:
-            f.write(command)
+        # UI signaling via files is deprecated; MCP UI clients should reflect state directly
     except Exception as e:
         logger.error(f"Error saving speech state: {e}")
         pass
@@ -270,46 +248,6 @@ def initialize_tts():
             
     except Exception:
         return False
-
-def ensure_ui_is_running():
-    """Ensure the PyQt UI process is running"""
-    global speech_state
-    
-    # Check if UI is already active
-    if speech_state.get("ui_active", False) and speech_state.get("ui_process_id"):
-        # Check if the process is actually running
-        try:
-            process_id = speech_state["ui_process_id"]
-            if psutil.pid_exists(process_id):
-                process = psutil.Process(process_id)
-                if process.status() != psutil.STATUS_ZOMBIE:
-                    return True
-        except Exception:
-            pass
-    
-    # Check for any existing UI processes by looking for Python processes running speech_mcp.ui
-    try:
-        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-            try:
-                cmdline = proc.info.get('cmdline', [])
-                if cmdline and len(cmdline) >= 3:
-                    # Look specifically for PyQt UI processes
-                    if 'python' in cmdline[0].lower() and '-m' in cmdline[1] and 'speech_mcp.ui' in cmdline[2]:
-                        # Found an existing PyQt UI process
-                        
-                        # Update our state to track this process
-                        speech_state["ui_active"] = True
-                        speech_state["ui_process_id"] = proc.info['pid']
-                        save_speech_state(speech_state, False)
-                        
-                        return True
-            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                continue
-    except Exception:
-        pass
-    
-    # No UI process found, we'll need to start one using the launch_ui tool
-    return False
 
 def record_audio():
     """Record audio from the microphone and return the audio data"""
@@ -565,39 +503,6 @@ def listen_for_speech() -> str:
             )
         )
 
-def cleanup_ui_process():
-    """Clean up the PyQt UI process when the server shuts down"""
-    global speech_state
-    
-    if speech_state.get("ui_active", False) and speech_state.get("ui_process_id"):
-        try:
-            process_id = speech_state["ui_process_id"]
-            if psutil.pid_exists(process_id):
-                process = psutil.Process(process_id)
-                process.terminate()
-                try:
-                    process.wait(timeout=3)
-                except psutil.TimeoutExpired:
-                    process.kill()
-            
-            # Update state
-            speech_state["ui_active"] = False
-            speech_state["ui_process_id"] = None
-            save_speech_state(speech_state, False)
-            
-            # Write a UI_CLOSED command to the command file
-            try:
-                with open(COMMAND_FILE, 'w') as f:
-                    f.write(CMD_UI_CLOSED)
-            except Exception:
-                pass
-        except Exception:
-            pass
-
-# Register cleanup function to be called on exit
-import atexit
-atexit.register(cleanup_ui_process)
-
 class VoiceInstance:
     """Manages a single Kokoro TTS voice instance"""
     def __init__(self, voice_id: str):
@@ -758,131 +663,22 @@ class VoiceManager:
 voice_manager = VoiceManager()
 
 @mcp.tool()
-def launch_ui() -> str:
+def launch_ui() -> list[UIResource]:
     """
-    Launch the speech UI.
-    
-    This will start the speech UI window that shows the microphone status and speech visualization.
-    The UI is required for visual feedback during speech recognition.
-    
-    Returns:
-        A message indicating whether the UI was successfully launched.
+    Return MCP UI resources to render the Speech controls, status and help.
     """
-    global speech_state
-    
-    # Check if UI is already running
-    if ensure_ui_is_running():
-        return "Speech UI is already running."
-    
-    # Check if a voice preference is saved
-    has_voice_preference = False
-    try:
-        # Import config module if available
-        if importlib.util.find_spec("speech_mcp.config") is not None:
-            from speech_mcp.config import get_setting, get_env_setting
-            
-            # Check environment variable
-            env_voice = get_env_setting(ENV_TTS_VOICE)
-            if env_voice:
-                has_voice_preference = True
-            else:
-                # Check config file
-                config_voice = get_setting("tts", "voice", None)
-                if config_voice:
-                    has_voice_preference = True
-    except Exception:
-        pass
-    
-    # Start a new UI process
-    try:
-        # Check for any existing UI processes first to prevent duplicates
-        existing_ui = False
-        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-            try:
-                cmdline = proc.info.get('cmdline', [])
-                if cmdline and len(cmdline) >= 3:
-                    # Look specifically for PyQt UI processes
-                    if 'python' in cmdline[0].lower() and '-m' in cmdline[1] and 'speech_mcp.ui' in cmdline[2]:
-                        # Found an existing PyQt UI process
-                        existing_ui = True
-                        
-                        # Update our state to track this process
-                        speech_state["ui_active"] = True
-                        speech_state["ui_process_id"] = proc.info['pid']
-                        save_speech_state(speech_state, False)
-                        
-                        return f"Speech PyQt UI is already running with PID {proc.info['pid']}."
-            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                continue
-        
-        # Start a new UI process if none exists
-        if not existing_ui:
-            # Clear any existing command file
-            try:
-                if os.path.exists(COMMAND_FILE):
-                    os.remove(COMMAND_FILE)
-            except Exception:
-                pass
-            
-            # Start the UI process
-            ui_process = subprocess.Popen(
-                [sys.executable, "-m", "speech_mcp.ui"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True
-            )
-            
-            # Update the speech state
-            speech_state["ui_active"] = True
-            speech_state["ui_process_id"] = ui_process.pid
-            save_speech_state(speech_state, False)
-            
-            # Wait for UI to fully initialize by checking for the UI_READY command
-            max_wait_time = 10  # Maximum wait time in seconds
-            wait_interval = 0.2  # Check every 200ms
-            waited_time = 0
-            ui_ready = False
-            
-            while waited_time < max_wait_time:
-                # Check if the process is still running
-                if not psutil.pid_exists(ui_process.pid):
-                    return "ERROR: PyQt UI process terminated unexpectedly."
-                
-                # Check if the command file exists and contains UI_READY
-                if os.path.exists(COMMAND_FILE):
-                    try:
-                        with open(COMMAND_FILE, 'r') as f:
-                            command = f.read().strip()
-                            if command == CMD_UI_READY:
-                                ui_ready = True
-                                break
-                    except Exception:
-                        pass
-                
-                # Wait before checking again
-                time.sleep(wait_interval)
-                waited_time += wait_interval
-            
-            if ui_ready:
-                # Check if we have a voice preference
-                if has_voice_preference:
-                    return f"PyQt Speech UI launched successfully with PID {ui_process.pid} and is ready."
-                else:
-                    return f"PyQt Speech UI launched successfully with PID {ui_process.pid}. Please select a voice to continue."
-            else:
-                return f"PyQt Speech UI launched with PID {ui_process.pid}, but readiness state is unknown."
-    except Exception as e:
-        return f"ERROR: Failed to launch PyQt Speech UI: {str(e)}"
+    return ui_resources()
 
 @mcp.tool()
-def start_conversation() -> str:
+def start_conversation(show_ui: bool = True) -> Union[str, List[Dict[str, Any]]]:
     """
     Start a voice conversation by beginning to listen.
     
     This will initialize the speech recognition system and immediately start listening for user input.
     
     Returns:
-        The transcription of the user's speech.
+        If show_ui is True (default): UI resources for MCP UI clients.
+        Otherwise: The transcription of the user's speech.
     """
     global speech_state
     
@@ -897,12 +693,12 @@ def start_conversation() -> str:
         "error": None
     })
     
-    # Initialize speech recognition if not already done
-    if not initialize_speech_recognition():
-        return "ERROR: Failed to initialize speech recognition."
+    # Initialize speech recognition proactively so UI interaction is snappy
+    initialize_speech_recognition()
     
-    # Check if UI is running but don't launch it automatically
-    ensure_ui_is_running()
+    # If UI is requested, return resources immediately and let the user click Start Listening
+    if show_ui:
+        return ui_resources()
     
     # Start listening
     try:
@@ -910,13 +706,7 @@ def start_conversation() -> str:
         speech_state["listening"] = True
         save_speech_state(speech_state, False)
         
-        # Create a special command file to signal LISTEN state to the UI
-        # This ensures the audio blips are played
-        try:
-            with open(COMMAND_FILE, 'w') as f:
-                f.write(CMD_LISTEN)
-        except Exception:
-            pass
+        # External MCP UI clients should react to state via protocol, no file signaling
         
         # Use a queue to get the result from the thread
         import queue
@@ -942,13 +732,7 @@ def start_conversation() -> str:
             speech_state["listening"] = False
             save_speech_state(speech_state, False)
             
-            # Create a special command file to signal IDLE state to the UI
-            # This ensures the audio blips are played
-            try:
-                with open(COMMAND_FILE, 'w') as f:
-                    f.write(CMD_IDLE)
-            except Exception:
-                pass
+            # External MCP UI clients observe state; no file signaling
             
             return transcription
         except queue.Empty:
@@ -956,12 +740,7 @@ def start_conversation() -> str:
             speech_state["listening"] = False
             save_speech_state(speech_state, False)
             
-            # Signal that we're done listening
-            try:
-                with open(COMMAND_FILE, 'w') as f:
-                    f.write(CMD_IDLE)
-            except Exception:
-                pass
+            # External MCP UI clients observe state; no file signaling
             
             # Create an emergency transcription
             emergency_message = f"ERROR: Timeout waiting for speech transcription after {SPEECH_TIMEOUT} seconds."
@@ -972,19 +751,14 @@ def start_conversation() -> str:
         speech_state["listening"] = False
         save_speech_state(speech_state, False)
         
-        # Signal that we're done listening
-        try:
-            with open(COMMAND_FILE, 'w') as f:
-                f.write(CMD_IDLE)
-        except Exception:
-            pass
+        # External MCP UI clients observe state; no file signaling
         
         # Return an error message instead of raising an exception
         error_message = f"ERROR: Failed to start conversation: {str(e)}"
         return error_message
 
 @mcp.tool()
-def reply(text: str, wait_for_response: bool = True) -> str:
+def reply(text: str, wait_for_response: bool = True, show_ui: bool = True) -> Union[str, List[Dict[str, Any]]]:
     """
     Speak the provided text and optionally listen for a response.
     
@@ -995,10 +769,11 @@ def reply(text: str, wait_for_response: bool = True) -> str:
     Args:
         text: The text to speak to the user
         wait_for_response: Whether to wait for and return the user's response (default: True)
+        show_ui: Whether to return MCP UI resources (default: True)
         
     Returns:
-        If wait_for_response is True: The transcription of the user's response.
-        If wait_for_response is False: A confirmation message that the text was spoken.
+        If show_ui is True: UI resources for MCP UI clients (controls, status, help).
+        Otherwise: If wait_for_response is True, the transcription; else a confirmation message.
     """
     global speech_state
     
@@ -1007,12 +782,7 @@ def reply(text: str, wait_for_response: bool = True) -> str:
     speech_state["speaking"] = False
     save_speech_state(speech_state, False)
     
-    # Clear any existing response file to prevent double-speaking
-    try:
-        if os.path.exists(RESPONSE_FILE):
-            os.remove(RESPONSE_FILE)
-    except Exception:
-        pass
+    # Clear any pending state in external UIs is not handled here
     
     # Speak the text
     try:
@@ -1023,12 +793,13 @@ def reply(text: str, wait_for_response: bool = True) -> str:
     except Exception as e:
         return f"ERROR: Failed to speak text: {str(e)}"
     
-    # If we don't need to wait for a response, return now
+    # If UI requested, return resources now (user can click Start Listening in the UI)
+    if show_ui:
+        return ui_resources()
+    
+    # If we don't need to wait for a response and no UI requested, return now
     if not wait_for_response:
         return f"Spoke: {text}"
-    
-    # Check if UI is running but don't launch it automatically
-    ensure_ui_is_running()
     
     # Start listening for response
     try:
@@ -1070,67 +841,186 @@ def reply(text: str, wait_for_response: bool = True) -> str:
         error_message = f"ERROR: Failed to listen for response: {str(e)}"
         return error_message
 
+def _create_ui_resource(uri: str, html_string: str) -> Dict[str, Any]:
+    """Create a UIResource-like dictionary consumable by MCP UI clients.
+
+    The structure mirrors the example in mcp-ui, returning a dict with keys:
+    - uri: unique resource URI (e.g., ui://speech/controls)
+    - content: { type: "rawHtml", htmlString: "..." }
+    - encoding: "text"
+    """
+    res = create_UIResource({
+            "uri": uri,
+            "content": {
+                "type": "rawHtml",
+                "htmlString": html_string,
+            },
+            "encoding": "text",
+        })
+    return res
+
+def _render_status_html() -> str:
+    """Render current status from state into a small HTML panel."""
+    state = state_manager.get_state()
+    listening = "true" if state.get("listening") else "false"
+    speaking = "true" if state.get("speaking") else "false"
+    last_transcript = (state.get("last_transcript") or "").replace("<", "&lt;")
+    last_response = (state.get("last_response") or "").replace("<", "&lt;")
+    voice_pref = state.get("voice_preference") or "(default)"
+    return f"""
+    <div style=\"padding: 16px; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial;\">
+      <h3 style=\"margin: 0 0 8px;\">Speech Status</h3>
+      <div style=\"font-size: 14px; line-height: 1.5;\">
+        <div><strong>Listening:</strong> {listening}</div>
+        <div><strong>Speaking:</strong> {speaking}</div>
+        <div><strong>Voice:</strong> {voice_pref}</div>
+        <div style=\"margin-top: 8px;\"><strong>Last transcript</strong></div>
+        <pre style=\"white-space: pre-wrap; background:#f8f9fa; padding:8px; border:1px solid #e9ecef; border-radius:6px;\">{last_transcript}</pre>
+        <div style=\"margin-top: 8px;\"><strong>Last response</strong></div>
+        <pre style=\"white-space: pre-wrap; background:#f8f9fa; padding:8px; border:1px solid #e9ecef; border-radius:6px;\">{last_response}</pre>
+      </div>
+    </div>
+    """
+
+def _controls_html() -> str:
+    """Interactive controls panel with intent buttons/dropdowns.
+
+    The client should forward postMessage({ type: 'intent', payload: { intent, params } })
+    to the server tool `ui_intent(intent: str, params: dict)`.
+    """
+    return """
+    <div style=\"padding: 16px; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial;\">
+      <h2 style=\"margin: 0 0 8px;\">Speech Controls</h2>
+      <p style=\"margin:0 0 12px; color:#444;\">Use these controls to start listening, speak text, and set the voice.</p>
+
+      <div style=\"display:flex; gap:8px; flex-wrap: wrap;\">
+        <button onclick=\"sendIntent('start_listening', {})\" style=\"background:#007cba; color:#fff; padding:8px 12px; border:none; border-radius:6px; cursor:pointer;\">Start Listening</button>
+        <button onclick=\"promptSpeak()\" style=\"background:#28a745; color:#fff; padding:8px 12px; border:none; border-radius:6px; cursor:pointer;\">Speak Text…</button>
+        <button onclick=\"sendIntent('stop', {})\" style=\"background:#6c757d; color:#fff; padding:8px 12px; border:none; border-radius:6px; cursor:pointer;\">Stop</button>
+      </div>
+
+      <div style=\"margin-top:12px;\">
+        <label for=\"voiceSelect\" style=\"font-size: 14px;\">Voice</label><br />
+        <select id=\"voiceSelect\" onchange=\"onVoiceChange(this.value)\" style=\"margin-top:4px; padding:6px 8px; border-radius:6px; border:1px solid #ced4da;\">
+          <option value=\"af_heart\">af_heart (default)</option>
+          <option value=\"am_michael\">am_michael</option>
+          <option value=\"bm_daniel\">bm_daniel</option>
+          <option value=\"bf_emma\">bf_emma</option>
+          <option value=\"ff_siwis\">ff_siwis</option>
+        </select>
+      </div>
+
+      <div id=\"uiStatus\" style=\"margin-top:12px; font-size:13px; color:#555;\"></div>
+    </div>
+
+    <script>
+      function sendIntent(intent, params) {
+        const status = document.getElementById('uiStatus');
+        if (status) {
+          status.textContent = `Intent: ${intent}  Params: ${JSON.stringify(params)}`;
+        }
+        if (window.parent) {
+          window.parent.postMessage({ type: 'intent', payload: { intent, params } }, '*');
+        }
+      }
+      function onVoiceChange(voice) { sendIntent('set_voice', { voice }); }
+      function promptSpeak() {
+        const text = window.prompt('Text to speak');
+        if (text && text.trim()) {
+          sendIntent('speak', { text: text.trim() });
+        }
+      }
+    </script>
+    """
+
 @mcp.tool()
-def close_ui() -> str:
+def ui_resources() -> list[UIResource]:
+    """Return UI resources for MCP UI clients.
+
+    Provides multiple modular panels:
+    - ui://speech/controls
+    - ui://speech/status
+    - ui://speech/help
     """
-    Close the speech UI window.
-    
-    This will gracefully shut down the speech UI window if it's currently running.
-    Use this when you're done with voice interaction to clean up resources.
-    
-    Returns:
-        A message indicating whether the UI was successfully closed.
+    controls = _create_ui_resource("ui://speech/controls", _controls_html())
+    status = _create_ui_resource("ui://speech/status", _render_status_html())
+    help_html = """
+      <div style=\"padding: 16px; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial;\">
+        <h3 style=\"margin:0 0 8px;\">Help</h3>
+        <p style=\"margin:0;\">Use the controls to start listening or speak a response. Voice selection updates the TTS voice.</p>
+      </div>
     """
-    global speech_state
-    
-    # Check if UI is running
-    if speech_state.get("ui_active", False) and speech_state.get("ui_process_id"):
-        try:
-            process_id = speech_state["ui_process_id"]
-            if psutil.pid_exists(process_id):
-                # Check if it's actually our UI process (not just a reused PID)
-                try:
-                    process = psutil.Process(process_id)
-                    cmdline = process.cmdline()
-                    if not any('speech_mcp.ui' in cmd for cmd in cmdline):
-                        # Update state since this isn't our process
-                        speech_state["ui_active"] = False
-                        speech_state["ui_process_id"] = None
-                        save_speech_state(speech_state, False)
-                        return "No active Speech UI found to close (PID was reused by another process)."
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    pass
-                
-                # First try to gracefully close the UI by writing a UI_CLOSED command
-                try:
-                    with open(COMMAND_FILE, 'w') as f:
-                        f.write(CMD_UI_CLOSED)
-                    
-                    # Give the UI a moment to close gracefully
-                    time.sleep(1.0)
-                except Exception:
-                    pass
-                
-                # Now check if the process is still running
-                if psutil.pid_exists(process_id):
-                    # Process is still running, terminate it
-                    process = psutil.Process(process_id)
-                    process.terminate()
-                    try:
-                        process.wait(timeout=3)
-                    except psutil.TimeoutExpired:
-                        process.kill()
-            
-            # Update state
-            speech_state["ui_active"] = False
-            speech_state["ui_process_id"] = None
+    help_res = _create_ui_resource("ui://speech/help", help_html)
+    return [controls, status, help_res]
+
+@mcp.tool()
+def show_raw_html() -> list[UIResource]:
+    """Creates a UI resource displaying raw HTML (debug example)."""
+    ui_resource = _create_ui_resource(
+        "ui://raw-html-demo",
+        "<h1>Hello from Raw HTML2</h1>"
+    )
+    return [ui_resource]
+
+
+@mcp.tool()
+def ui_intent(intent: str, params: Optional[Dict[str, Any]] = None) -> str:
+    """Handle intents sent from the MCP UI client.
+
+    Supported intents:
+    - start_listening: begins streaming transcription and returns the result
+    - speak { text }: speaks the provided text
+    - set_voice { voice }: sets preferred voice and (re)initializes TTS as needed
+    - stop: clears listening/speaking flags
+    """
+    global speech_state, tts_engine
+    params = params or {}
+
+    try:
+        if intent == "start_listening":
+            # Begin listening; reuse start_conversation pipeline
+            if not initialize_speech_recognition():
+                return "ERROR: Failed to initialize speech recognition."
+            speech_state["listening"] = True
             save_speech_state(speech_state, False)
+            result = listen_for_speech()
+            return result or ""
+
+        if intent == "speak":
+            text = str(params.get("text") or "").strip()
+            if not text:
+                return "ERROR: Missing text"
+            speak_text(text)
+            return f"Spoke: {text}"
+
+        if intent == "set_voice":
+            voice = str(params.get("voice") or "").strip()
+            if not voice:
+                return "ERROR: Missing voice"
+            # Persist preference and try to apply to current engine if possible
+            state_manager.update_state({"voice_preference": voice}, persist=True)
+            if tts_engine and hasattr(tts_engine, "set_voice"):
+                try:
+                    tts_engine.set_voice(voice)
+                except Exception:
+                    # Fall back to re-init if direct set is not supported
+                    tts_engine = None
+            # Re-initialize TTS with new preference
+            initialize_tts()
+            return f"Voice set to {voice}"
+
+        if intent == "stop":
+            speech_state["listening"] = False
+            speech_state["speaking"] = False
+            save_speech_state(speech_state, False)
+            return "Stopped listening/speaking"
             
-            return "Speech UI was closed successfully."
-        except Exception as e:
-            return f"ERROR: Failed to close Speech UI: {str(e)}"
-    else:
-        return "No active Speech UI found to close."
+        return f"ERROR: Unknown intent '{intent}'"
+    except Exception as e:
+        # Ensure we do not leave flags stuck
+        speech_state["listening"] = False
+        save_speech_state(speech_state, False)
+        return f"ERROR: {str(e)}"
 
 @mcp.tool()
 def transcribe(file_path: str, include_timestamps: bool = False, detect_speakers: bool = False) -> str:
@@ -1570,11 +1460,7 @@ def usage_guide() -> str:
     
     ## How to Use
     
-    1. Launch the speech UI for visual feedback (optional but recommended):
-       ```
-       launch_ui()
-       ```
-       This starts the visual interface that shows when the microphone is active.
+    1. Use an MCP UI client to connect to this server for visual feedback.
        
     2. Start a conversation:
        ```
@@ -1595,11 +1481,7 @@ def usage_guide() -> str:
        ```
        This speaks the text but doesn't listen for a response, useful for announcements or confirmations.
        
-    5. Close the speech UI when done:
-       ```
-       close_ui()
-       ```
-       This gracefully closes the speech UI window when you're finished with voice interaction.
+    5. Close the UI from your MCP UI client when done.
        
     6. Transcribe audio/video files:
        ```
@@ -1661,8 +1543,7 @@ def usage_guide() -> str:
     
     - For best results, use a quiet environment and speak clearly
     - Kokoro TTS is automatically initialized on server start for faster response times
-    - Use the `launch_ui()` function to start the visual PyQt interface:
-      - The PyQt UI shows when the microphone is active and listening
+    - Use an MCP UI client (like mcp-ui) to view microphone status and activity:
       - A blue pulsing circle indicates active listening
       - A green circle indicates the system is speaking
       - Voice selection is available in the UI dropdown
