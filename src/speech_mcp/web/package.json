@@ -1,0 +1,13 @@
+{
+  "name": "speech-mcp-ui",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "esbuild panel.ts --bundle --format=iife --minify --outfile=../resources/ui/panel.js && cp panel.css ../resources/ui/panel.css && cp panel.html ../resources/ui/panel.html"
+  },
+  "devDependencies": {
+    "esbuild": "^0.21.5",
+    "typescript": "^5.5.4"
+  }
+}
+

@@ -1,0 +1,55 @@
+<!-- Panel template; placeholders injected by Python loader -->
+{{CSS}}
+<div class="wrap">
+  <div class="card">
+    <div class="header">
+      <div>
+        <div class="title">Speech Console</div>
+        <div class="sub">Controls and live status for listening/speaking with voice selection.</div>
+      </div>
+    </div>
+    <div class="row">
+      <button class="btn btn-primary" onclick="sendIntent('start_listening', {})">Start Listening</button>
+      <button class="btn btn-ok" onclick="promptSpeak()">Speak Text…</button>
+      <button class="btn btn-dim" onclick="sendIntent('stop', {})">Stop</button>
+      <select id="voiceSelect" class="select" onchange="onVoiceChange(this.value)">
+        <option value="af_heart">af_heart (default)</option>
+        <option value="am_michael">am_michael</option>
+        <option value="bm_daniel">bm_daniel</option>
+        <option value="bf_emma">bf_emma</option>
+        <option value="ff_siwis">ff_siwis</option>
+      </select>
+    </div>
+    <div class="grid">
+      <div>
+        <div class="label">Listening</div>
+        <div id="listenWaves" class="waves"></div>
+      </div>
+      <div>
+        <div class="label">Speaking</div>
+        <div id="speakWaves" class="waves"></div>
+      </div>
+    </div>
+    <div class="grid">
+      <div>
+        <div class="label">Status</div>
+        <div class="box kpi">
+          <div><strong>Listening:</strong> <span id="kpiListening">{{listening}}</span></div>
+          <div><strong>Speaking:</strong> <span id="kpiSpeaking">{{speaking}}</span></div>
+          <div><strong>Voice:</strong> <span id="kpiVoice">{{voice_pref}}</span></div>
+        </div>
+      </div>
+      <div>
+        <div class="label">Last transcript</div>
+        <div class="box"><pre class="pre" id="lastTranscript">{{last_transcript}}</pre></div>
+      </div>
+      <div>
+        <div class="label">Last response</div>
+        <div class="box"><pre class="pre" id="lastResponse">{{last_response}}</pre></div>
+      </div>
+    </div>
+    <div id="uiStatus" class="sub" style="margin-top:10px;"></div>
+  </div>
+  {{JS}}
+</div>
+

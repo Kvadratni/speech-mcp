@@ -7,6 +7,7 @@ import tempfile
 import subprocess
 import psutil
 import importlib.util
+from importlib import resources as pkg_resources
 from typing import Dict, List, Union, Optional, Callable, Any
 from pathlib import Path
 import numpy as np
@@ -859,6 +860,28 @@ def _create_ui_resource(uri: str, html_string: str) -> Dict[str, Any]:
         })
     return res
 
+def _full_panel_html() -> str:
+    from importlib import resources as pkg
+    s = state_manager.get_state()
+    v = {
+        "listening": "true" if s.get("listening") else "false",
+        "speaking": "true" if s.get("speaking") else "false",
+        "voice_pref": s.get("voice_preference") or "(default)",
+        "last_transcript": (s.get("last_transcript") or "").replace("<", "&lt;"),
+        "last_response": (s.get("last_response") or "").replace("<", "&lt;"),
+    }
+    tpl = pkg.files("speech_mcp.resources.ui").joinpath("panel.html").read_text(encoding="utf-8")
+    css = pkg.files("speech_mcp.resources.ui").joinpath("panel.css").read_text(encoding="utf-8")
+    js = pkg.files("speech_mcp.resources.ui").joinpath("panel.js").read_text(encoding="utf-8")
+    return (
+        tpl.replace("{{CSS}}", f"<style>{css}</style>")
+           .replace("{{JS}}", f"<script>{js}</script>")
+           .replace("{{listening}}", v["listening"]) 
+           .replace("{{speaking}}", v["speaking"]) 
+           .replace("{{voice_pref}}", v["voice_pref"]) 
+           .replace("{{last_transcript}}", v["last_transcript"]) 
+           .replace("{{last_response}}", v["last_response"]) )
+
 def _render_status_html() -> str:
     """Render current status from state into a small HTML panel."""
     state = state_manager.get_state()
@@ -937,21 +960,10 @@ def _controls_html() -> str:
 def ui_resources() -> list[UIResource]:
     """Return UI resources for MCP UI clients.
 
-    Provides multiple modular panels:
-    - ui://speech/controls
-    - ui://speech/status
-    - ui://speech/help
+    Provides a single consolidated panel with controls, status and waves.
     """
-    controls = _create_ui_resource("ui://speech/controls", _controls_html())
-    status = _create_ui_resource("ui://speech/status", _render_status_html())
-    help_html = """
-      <div style=\"padding: 16px; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial;\">
-        <h3 style=\"margin:0 0 8px;\">Help</h3>
-        <p style=\"margin:0;\">Use the controls to start listening or speak a response. Voice selection updates the TTS voice.</p>
-      </div>
-    """
-    help_res = _create_ui_resource("ui://speech/help", help_html)
-    return [controls, status, help_res]
+    panel = _create_ui_resource("ui://speech/panel", _full_panel_html())
+    return [panel]
 
 @mcp.tool()
 def show_raw_html() -> list[UIResource]:
