@@ -666,14 +666,17 @@ voice_manager = VoiceManager()
 @mcp.tool()
 def launch_ui() -> list[UIResource]:
     """
-    Return MCP UI resources to render the Speech controls, status and help.
+    UI tool: returns UI resources (list[UIResource]) for the Speech panel(s).
     """
     return ui_resources()
 
 @mcp.tool()
-def start_conversation(show_ui: bool = True) -> Union[str, List[Dict[str, Any]]]:
+def start_conversation(show_ui: bool = False) -> str:
     """
-    Start a voice conversation by beginning to listen.
+    Non-UI tool: starts listening and returns transcription or an error string.
+
+    Note: The previous behavior of returning UI resources when show_ui=True is
+    deprecated. Use launch_ui() or ui_resources() to obtain UI resources.
     
     This will initialize the speech recognition system and immediately start listening for user input.
     
@@ -697,30 +700,7 @@ def start_conversation(show_ui: bool = True) -> Union[str, List[Dict[str, Any]]]
     # Initialize speech recognition proactively so UI interaction is snappy
     initialize_speech_recognition()
     
-    # If UI is requested, return resources immediately and let the user click Start Listening
-    if show_ui:
-        # Serialize UIResource objects to plain dicts for tool output
-        resources = ui_resources()
-        out: List[Dict[str, Any]] = []
-        for r in resources:
-            if isinstance(r, dict):
-                out.append(r)
-            else:
-                d = getattr(r, "model_dump", None)
-                if callable(d):
-                    out.append(r.model_dump())
-                else:
-                    d2 = getattr(r, "dict", None)
-                    if callable(d2):
-                        out.append(r.dict())
-                    else:
-                        # Fallback: minimal projection
-                        out.append({
-                            "uri": getattr(r, "uri", "ui://unknown"),
-                            "content": getattr(r, "content", {}),
-                            "encoding": getattr(r, "encoding", "text"),
-                        })
-        return out
+    # UI rendering has been moved to launch_ui() / ui_resources().
     
     # Start listening
     try:
@@ -815,28 +795,7 @@ def reply(text: str, wait_for_response: bool = True, show_ui: bool = True) -> Un
     except Exception as e:
         return f"ERROR: Failed to speak text: {str(e)}"
     
-    # If UI requested, return resources now (user can click Start Listening in the UI)
-    if show_ui:
-        resources = ui_resources()
-        out2: List[Dict[str, Any]] = []
-        for r in resources:
-            if isinstance(r, dict):
-                out2.append(r)
-            else:
-                d = getattr(r, "model_dump", None)
-                if callable(d):
-                    out2.append(r.model_dump())
-                else:
-                    d2 = getattr(r, "dict", None)
-                    if callable(d2):
-                        out2.append(r.dict())
-                    else:
-                        out2.append({
-                            "uri": getattr(r, "uri", "ui://unknown"),
-                            "content": getattr(r, "content", {}),
-                            "encoding": getattr(r, "encoding", "text"),
-                        })
-        return out2
+    # UI rendering has been moved to launch_ui() / ui_resources().
     
     # If we don't need to wait for a response and no UI requested, return now
     if not wait_for_response:
@@ -1073,7 +1032,7 @@ def _mini_widget_html() -> str:
 
 @mcp.tool()
 def ui_resources() -> list[UIResource]:
-    """Return UI resources for MCP UI clients.
+    """UI tool: returns list[UIResource] for MCP UI clients.
 
     Provides a main panel and a compact mini widget for quick controls/status.
     """
