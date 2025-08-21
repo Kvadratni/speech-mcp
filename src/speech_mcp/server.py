@@ -699,7 +699,28 @@ def start_conversation(show_ui: bool = True) -> Union[str, List[Dict[str, Any]]]
     
     # If UI is requested, return resources immediately and let the user click Start Listening
     if show_ui:
-        return ui_resources()
+        # Serialize UIResource objects to plain dicts for tool output
+        resources = ui_resources()
+        out: List[Dict[str, Any]] = []
+        for r in resources:
+            if isinstance(r, dict):
+                out.append(r)
+            else:
+                d = getattr(r, "model_dump", None)
+                if callable(d):
+                    out.append(r.model_dump())
+                else:
+                    d2 = getattr(r, "dict", None)
+                    if callable(d2):
+                        out.append(r.dict())
+                    else:
+                        # Fallback: minimal projection
+                        out.append({
+                            "uri": getattr(r, "uri", "ui://unknown"),
+                            "content": getattr(r, "content", {}),
+                            "encoding": getattr(r, "encoding", "text"),
+                        })
+        return out
     
     # Start listening
     try:
@@ -796,7 +817,26 @@ def reply(text: str, wait_for_response: bool = True, show_ui: bool = True) -> Un
     
     # If UI requested, return resources now (user can click Start Listening in the UI)
     if show_ui:
-        return ui_resources()
+        resources = ui_resources()
+        out2: List[Dict[str, Any]] = []
+        for r in resources:
+            if isinstance(r, dict):
+                out2.append(r)
+            else:
+                d = getattr(r, "model_dump", None)
+                if callable(d):
+                    out2.append(r.model_dump())
+                else:
+                    d2 = getattr(r, "dict", None)
+                    if callable(d2):
+                        out2.append(r.dict())
+                    else:
+                        out2.append({
+                            "uri": getattr(r, "uri", "ui://unknown"),
+                            "content": getattr(r, "content", {}),
+                            "encoding": getattr(r, "encoding", "text"),
+                        })
+        return out2
     
     # If we don't need to wait for a response and no UI requested, return now
     if not wait_for_response:
