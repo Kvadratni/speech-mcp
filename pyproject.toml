@@ -49,6 +49,10 @@ include = [
     "src/**/*.py",
     "src/**/resources/**/*",
 ]
+exclude = [
+    "src/speech_mcp/ui/**",
+    "src/speech_mcp/ui_command.txt",
+]
 [tool.hatch.metadata]
 allow-direct-references = true
 [tool.uv]

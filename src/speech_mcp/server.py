@@ -842,7 +842,7 @@ def reply(text: str, wait_for_response: bool = True, show_ui: bool = True) -> Un
         error_message = f"ERROR: Failed to listen for response: {str(e)}"
         return error_message
 
-def _create_ui_resource(uri: str, html_string: str) -> Dict[str, Any]:
+def _create_ui_resource(uri: str, html_string: str, min_height: int = 342) -> Dict[str, Any]:
     """Create a UIResource-like dictionary consumable by MCP UI clients.
 
     The structure mirrors the example in mcp-ui, returning a dict with keys:
@@ -856,7 +856,7 @@ def _create_ui_resource(uri: str, html_string: str) -> Dict[str, Any]:
                 "type": "rawHtml",
                 "htmlString": html_string,
                 # Ensure the client allocates at least this much vertical space
-                "height": 342,
+                "height": min_height,
             },
             "encoding": "text",
         })
@@ -962,14 +962,84 @@ def _controls_html() -> str:
     </script>
     """
 
+def _mini_widget_html() -> str:
+    """Render a compact status + quick controls widget.
+
+    Shows listening/speaking state and offers quick Start/Stop and Speak actions.
+    Includes size-change postMessages for host autosizing.
+    """
+    state = state_manager.get_state()
+    listening = "true" if state.get("listening") else "false"
+    speaking = "true" if state.get("speaking") else "false"
+    voice_pref = state.get("voice_preference") or "(default)"
+    return f"""
+    <div style=\"font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; display:flex; align-items:center; gap:10px; padding:8px 10px; border:1px solid #e5e7eb; border-radius:10px; background:#fff; color:#111827;\">
+      <div style=\"display:flex; align-items:center; gap:8px;\">
+        <span style=\"display:inline-flex; align-items:center; gap:6px;\">
+          <span title=\"Listening\" style=\"width:10px; height:10px; border-radius:50%; background:{'#10b981' if listening=='true' else '#d1d5db'}; display:inline-block;\"></span>
+          <span style=\"font-size:12px; color:#374151;\">Listening</span>
+        </span>
+        <span style=\"display:inline-flex; align-items:center; gap:6px;\">
+          <span title=\"Speaking\" style=\"width:10px; height:10px; border-radius:50%; background:{'#3b82f6' if speaking=='true' else '#d1d5db'}; display:inline-block;\"></span>
+          <span style=\"font-size:12px; color:#374151;\">Speaking</span>
+        </span>
+        <span style=\"font-size:12px; color:#6b7280;\">Voice: {voice_pref}</span>
+      </div>
+      <div style=\"margin-left:auto; display:flex; gap:6px;\">
+        <button onclick=\"sendIntent('start_listening', {{}})\" style=\"background:#10b981; color:#fff; border:none; border-radius:8px; padding:6px 10px; font-size:12px; cursor:pointer;\">Listen</button>
+        <button onclick=\"promptSpeak()\" style=\"background:#3b82f6; color:#fff; border:none; border-radius:8px; padding:6px 10px; font-size:12px; cursor:pointer;\">Speak…</button>
+        <button onclick=\"sendIntent('stop', {{}})\" style=\"background:#6b7280; color:#fff; border:none; border-radius:8px; padding:6px 10px; font-size:12px; cursor:pointer;\">Stop</button>
+      </div>
+      <div id=\"uiStatus\" style=\"display:none\"></div>
+    </div>
+    <script>
+      function postSize() {{
+        const h = document.documentElement.scrollHeight;
+        const w = document.documentElement.scrollWidth;
+        const payload = {{ height: h, width: w }};
+        if (window.parent) {{
+          window.parent.postMessage({{ type: 'ui-size-change', payload }}, '*');
+          window.parent.postMessage({{ type: 'size-change', payload }}, '*');
+        }}
+      }}
+      let rafScheduled = false;
+      function scheduleSize() {{
+        if (rafScheduled) return;
+        rafScheduled = true;
+        requestAnimationFrame(() => {{ rafScheduled = false; postSize(); }});
+      }}
+      if ('ResizeObserver' in window) {{
+        const ro = new ResizeObserver(() => scheduleSize());
+        ro.observe(document.documentElement);
+        ro.observe(document.body);
+      }} else {{ window.addEventListener('resize', scheduleSize); }}
+      document.addEventListener('DOMContentLoaded', scheduleSize);
+      window.addEventListener('load', scheduleSize);
+      setTimeout(scheduleSize, 0);
+
+      function sendIntent(intent, params) {{
+        const status = document.getElementById('uiStatus');
+        if (status) {{ status.textContent = `Intent: ${'{'}intent{'}'} — ${'{'}JSON.stringify(params){'}'}`; }}
+        if (window.parent) {{
+          window.parent.postMessage({{ type: 'intent', payload: {{ intent, params }} }}, '*');
+        }}
+      }}
+      function promptSpeak() {{
+        const text = window.prompt('Text to speak');
+        if (text && text.trim()) {{ sendIntent('speak', {{ text: text.trim() }}); }}
+      }}
+    </script>
+    """
+
 @mcp.tool()
 def ui_resources() -> list[UIResource]:
     """Return UI resources for MCP UI clients.
 
-    Provides a single consolidated panel with controls, status and waves.
+    Provides a main panel and a compact mini widget for quick controls/status.
     """
-    panel = _create_ui_resource("ui://speech/panel", _full_panel_html())
-    return [panel]
+    panel = _create_ui_resource("ui://speech/panel", _full_panel_html(), min_height=342)
+    mini = _create_ui_resource("ui://speech/mini", _mini_widget_html(), min_height=56)
+    return [panel, mini]
 
 @mcp.tool()
 def show_raw_html() -> list[UIResource]:
