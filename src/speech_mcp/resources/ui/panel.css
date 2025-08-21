@@ -9,7 +9,7 @@
   --dim: #6b7280;
 }
 .wrap { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; color: var(--text); background: var(--bg); }
-.card { border: 1px solid var(--border); border-radius: 16px; padding: 16px; background: var(--panel); box-shadow: 0 8px 24px rgba(0,0,0,.35); }
+.card { border: 1px solid var(--border); border-radius: 16px; padding: 16px; background: var(--panel); box-shadow: 0 8px 24px rgba(0,0,0,.35); min-height: 342px; }
 .header { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; }
 .title { font-size: 18px; font-weight: 700; }
 .sub { color: var(--muted); font-size: 13px; }

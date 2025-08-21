@@ -119,3 +119,38 @@ function detectAndApplySystemTheme() {
 }
 
 
+// MCP-UI: report size changes to host (ui-size-change with size-change fallback)
+function postSizeToHost(): void {
+  const height = document.documentElement.scrollHeight;
+  const width = document.documentElement.scrollWidth;
+  const payload = { height, width };
+  if (window.parent) {
+    window.parent.postMessage({ type: 'ui-size-change', payload }, '*');
+    window.parent.postMessage({ type: 'size-change', payload }, '*');
+  }
+}
+
+(function initSizeObserver() {
+  let rafScheduled = false;
+  const schedulePost = () => {
+    if (rafScheduled) return;
+    rafScheduled = true;
+    requestAnimationFrame(() => {
+      rafScheduled = false;
+      postSizeToHost();
+    });
+  };
+
+  if ('ResizeObserver' in window) {
+    const ro = new ResizeObserver(() => schedulePost());
+    ro.observe(document.documentElement);
+    ro.observe(document.body);
+  } else {
+    window.addEventListener('resize', schedulePost);
+  }
+
+  document.addEventListener('DOMContentLoaded', schedulePost);
+  window.addEventListener('load', schedulePost);
+  setTimeout(schedulePost, 0);
+})();
+

@@ -855,6 +855,8 @@ def _create_ui_resource(uri: str, html_string: str) -> Dict[str, Any]:
             "content": {
                 "type": "rawHtml",
                 "htmlString": html_string,
+                # Ensure the client allocates at least this much vertical space
+                "height": 342,
             },
             "encoding": "text",
         })
