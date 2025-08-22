@@ -20,6 +20,7 @@
 .btn-ok { background: var(--ok); }
 .btn-dim { background: var(--dim); }
 .select { background: var(--panel); color:var(--text); border:1px solid var(--border); border-radius:10px; padding:8px 10px; min-width:220px; }
+.input { background: var(--panel); color:var(--text); border:1px solid var(--border); border-radius:10px; padding:8px 10px; min-width:260px; }
 .grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:14px; margin-top:14px; }
 .box { background:#0b1220; border:1px solid var(--border); border-radius:12px; padding:12px; min-height:60px; }
 .label { color:var(--muted); font-size:12px; margin-bottom:6px; }

@@ -1,22 +1,34 @@
-function postIntent(intent: string, params: Record<string, unknown> = {}) {
-  const status = document.getElementById('uiStatus');
-  if (status) status.textContent = `Intent: ${intent} — ${JSON.stringify(params)}`;
-  if (window.parent) {
-    window.parent.postMessage({ type: 'intent', payload: { intent, params } }, '*');
-  }
+function netLog(message: string) {
+  const el = document.getElementById('netLog'); if (!el) return;
+  el.textContent = `${new Date().toISOString()} ${message}\n` + el.textContent;
 }
+
+// Send a prompt to the host (Goose will route it to the agent)
+function postPrompt(text: string) {
+  netLog(`PROMPT ${text}`);
+  const status = document.getElementById('uiStatus');
+  if (status) status.textContent = `Prompt: ${text}`;
+  try {
+    const parent = (window as any).parent;
+    if (!parent) return;
+    // Primary (mcp-ui): payload.prompt
+    parent.postMessage({ type: 'prompt', payload: { prompt: text } }, '*');
+  } catch {}
+}
+
 
 // Expose to inline HTML
 // @ts-ignore
-window.sendIntent = (intent: string, params: Record<string, unknown> = {}) => {
-  postIntent(intent, params);
-  if (intent === 'start_listening') { setListening(true); setSpeaking(false); }
-  if (intent === 'stop') { setListening(false); setSpeaking(false); }
+window.startListening = async () => {
+  (window as any).setListening(true); (window as any).setSpeaking(false);
+  try { postPrompt('listen'); } catch {}
 };
 // @ts-ignore
-window.onVoiceChange = (voice: string) => {
-  postIntent('set_voice', { voice });
+window.stopAll = async () => { try { postPrompt('stop'); } catch {} };
+// @ts-ignore
+window.onVoiceChange = async (voice: string) => {
   const k = document.getElementById('kpiVoice'); if (k) k.textContent = voice;
+  try { postPrompt(`set_voice ${voice}`); } catch {}
 };
 // @ts-ignore
 window.onThemeChange = (theme: string) => {
@@ -26,12 +38,38 @@ window.onThemeChange = (theme: string) => {
 window.promptSpeak = () => {
   const text = window.prompt('Text to speak');
   if (text && text.trim()) {
-    setSpeaking(true); setListening(false);
+    (window as any).setSpeaking(true); (window as any).setListening(false);
     const lr = document.getElementById('lastResponse'); if (lr) lr.textContent = text.trim();
-    postIntent('speak', { text: text.trim() });
-    setTimeout(() => setSpeaking(false), 1600);
+    postPrompt(`speak ${text.trim()}`);
   }
 };
+
+// Say from inline input
+// @ts-ignore
+window.sayFromInput = () => {
+  const input = document.getElementById('sayInput') as HTMLInputElement | null;
+  const text = (input?.value || '').trim();
+  if (!text) return;
+  (window as any).setSpeaking(true); (window as any).setListening(false);
+  const lr = document.getElementById('lastResponse'); if (lr) lr.textContent = text;
+  postPrompt(`speak ${text}`);
+};
+
+// Start/Stop conversation convenience (enable loop and listen immediately)
+// @ts-ignore
+window.startConversation = async () => {
+  const btn = document.getElementById('convBtn') as HTMLButtonElement | null;
+  postPrompt('listen');
+  if (btn) { btn.textContent = 'Listening…'; setTimeout(() => { if (btn) btn.textContent = 'Start Conversation'; }, 1000); }
+};
+
+// Boot log for BASE/TOKEN visibility
+try {
+  const base = (window as any).SPEECH_BASE;
+  const token = (window as any).SPEECH_TOKEN;
+  if (base) netLog(`BOOT BASE=${base}`);
+  if (token) netLog(`BOOT TOKEN=${token}`);
+} catch {}
 
 function seedWaves(el: HTMLElement | null) {
   if (!el) return;
@@ -99,9 +137,9 @@ function detectAndApplySystemTheme() {
   if (sel) sel.value = theme;
   // Watch for changes
   if (typeof window.matchMedia === 'function') {
-    const mq = window.matchMedia('(prefers-color-scheme: dark)');
-    if ('addEventListener' in mq) {
-      mq.addEventListener('change', ev => {
+    const mq: any = window.matchMedia('(prefers-color-scheme: dark)');
+    if ((mq as any) && 'addEventListener' in (mq as any)) {
+      mq.addEventListener('change', (ev: any) => {
         const t = ev.matches ? 'midnight' : 'glacier';
         applyTheme(t);
         const s = document.getElementById('themeSelect') as HTMLSelectElement | null; if (s) s.value = t;
@@ -118,6 +156,15 @@ function detectAndApplySystemTheme() {
   }
 }
 
+// Show a simple UI version so you can verify reloads
+try {
+  const verEl = document.getElementById('uiVer');
+  if (verEl) {
+    const ts = new Date().toISOString().replace('T',' ').replace('Z','');
+    verEl.textContent = `UI v0.35 (${ts})`;
+  }
+} catch {}
+
 
 // MCP-UI: report size changes to host (ui-size-change with size-change fallback)
 function postSizeToHost(): void {
@@ -125,8 +172,8 @@ function postSizeToHost(): void {
   const width = document.documentElement.scrollWidth;
   const payload = { height, width };
   if (window.parent) {
+    // Use the canonical mcp-ui size message; avoid legacy 'size-change' to prevent UNKNOWN_ACTION
     window.parent.postMessage({ type: 'ui-size-change', payload }, '*');
-    window.parent.postMessage({ type: 'size-change', payload }, '*');
   }
 }
 
@@ -146,7 +193,7 @@ function postSizeToHost(): void {
     ro.observe(document.documentElement);
     ro.observe(document.body);
   } else {
-    window.addEventListener('resize', schedulePost);
+    (window as any).addEventListener('resize', schedulePost);
   }
 
   document.addEventListener('DOMContentLoaded', schedulePost);

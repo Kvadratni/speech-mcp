@@ -49,6 +49,7 @@ def main():
         )
         parser.parse_args()
         
+        # SSE sidecar eager startup removed; MCP-UI host manages UI state
         logger.info("Running MCP server...")
         mcp.run()
     except Exception as e:

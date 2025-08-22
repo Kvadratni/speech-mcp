@@ -7,11 +7,10 @@
         <div class="title">Speech Console</div>
         <div class="sub">Controls and live status for listening/speaking with voice selection.</div>
       </div>
+      <div class="sub" id="uiVer"></div>
     </div>
     <div class="row">
-      <button class="btn btn-primary" onclick="sendIntent('start_listening', {})">Start Listening</button>
-      <button class="btn btn-ok" onclick="promptSpeak()">Speak Text…</button>
-      <button class="btn btn-dim" onclick="sendIntent('stop', {})">Stop</button>
+      <button id="convBtn" class="btn btn-primary" onclick="startConversation()">Start Conversation</button>
       <select id="voiceSelect" class="select" onchange="onVoiceChange(this.value)">
         <option value="af_heart">af_heart (default)</option>
         <option value="am_michael">am_michael</option>
@@ -24,6 +23,8 @@
         <option value="glacier">Glacier Light</option>
         <option value="emerald">Emerald Slate (dark)</option>
       </select>
+      <input id="sayInput" class="input" type="text" placeholder="Type something to say…" />
+      <button class="btn btn-ok" onclick="sayFromInput()">🗣 Say</button>
     </div>
     <div class="grid">
       <div>
@@ -54,6 +55,12 @@
       </div>
     </div>
     <div id="uiStatus" class="sub" style="margin-top:10px;"></div>
+    <div class="grid">
+      <div>
+        <div class="label">Network (debug)</div>
+        <div class="box"><pre class="pre" id="netLog"></pre></div>
+      </div>
+    </div>
   </div>
   {{JS}}
 </div>
