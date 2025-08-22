@@ -116,8 +116,8 @@ def get_logger(name: str, component: Optional[str] = None) -> logging.Logger:
             backupCount=BACKUP_COUNT
         )
         
-        # Create a console handler
-        console_handler = logging.StreamHandler(sys.stdout)
+        # Create a console handler that writes to stderr (stdout is reserved for MCP stdio)
+        console_handler = logging.StreamHandler(sys.stderr)
         
         # Create a formatter
         formatter = logging.Formatter(

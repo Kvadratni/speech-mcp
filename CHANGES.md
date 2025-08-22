@@ -2,6 +2,13 @@
 
 ## Latest Changes
 
+### 8. 2.0.0 - Switch to external MCP UI
+- Removed internal PyQt UI and file-based signaling
+- Deprecated `launch_ui()` and `close_ui()` tools; MCP UI is handled by external clients
+- Updated usage guide and README to reference MCP UI clients
+- Removed `PyQt5` dependency
+- Bumped major version to 2.0.0 for breaking changes
+
 ### 7. Kokoro TTS Integration
 - Added support for Kokoro TTS, a high-quality neural text-to-speech engine
 - Created a modular TTS adapter system to support multiple TTS engines

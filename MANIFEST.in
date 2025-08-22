@@ -1,1 +1,3 @@
 recursive-include src/speech_mcp/resources *
+prune src/speech_mcp/ui
+exclude src/speech_mcp/ui_command.txt

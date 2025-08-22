@@ -6,6 +6,14 @@ set -e  # Exit on error
 # Change to the project directory
 cd "$(dirname "$0")"
 
+# Build web UI assets (uses prebuilt if Node not available)
+if command -v node >/dev/null 2>&1; then
+  echo "Building web UI assets..."
+  (cd src/speech_mcp/web && npm install && npm run build) || echo "Web build skipped (non-fatal). Using committed assets."
+else
+  echo "Node.js not found; using committed UI assets."
+fi
+
 # Build the wheel
 echo "Building wheel..."
 python -m build
