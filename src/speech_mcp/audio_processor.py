@@ -74,28 +74,40 @@ class AudioProcessor:
             numdevices = info.get('deviceCount')
             logger.info(f"Found {numdevices} audio devices:")
             
-            # Find the best input device
-            for i in range(numdevices):
-                try:
-                    device_info = self.pyaudio.get_device_info_by_host_api_device_index(0, i)
-                    device_name = device_info.get('name')
-                    max_input_channels = device_info.get('maxInputChannels')
-                    
-                    logger.info(f"Device {i}: {device_name}")
-                    logger.info(f"  Max Input Channels: {max_input_channels}")
-                    logger.info(f"  Default Sample Rate: {device_info.get('defaultSampleRate')}")
-                    
-                    # Only consider input devices
-                    if max_input_channels > 0:
-                        logger.info(f"Found input device: {device_name}")
-                        
-                        # Prefer non-default devices as they're often external mics
-                        if self.selected_device_index is None or 'default' not in device_name.lower():
-                            self.selected_device_index = i
-                            logger.info(f"Selected input device: {device_name} (index {i})")
-                except Exception as e:
-                    logger.warning(f"Error checking device {i}: {e}")
-            
+            # Check for preferred devices in config
+            try:
+                # Check for preferred devices in config
+                from speech_mcp.config import get_setting
+
+                preferred_devices = [name.lower() for name in get_setting("stt", "preferred_devices", [])]
+            except ImportError:
+                preferred_devices = []
+
+            if preferred_devices:
+                logger.info(f"Preferred input device list: {preferred_devices}")
+            else:
+                logger.info(f"No preferred input devices configured")
+
+            # Build a list of all available input devices
+            available_devices = self.get_available_devices()
+
+            matched_preferred_device = None
+            for preferred_device_name in preferred_devices:
+                matched_preferred_device = next((device for device in available_devices if preferred_device_name.lower() in device['name'].lower()), None)
+                if matched_preferred_device:
+                    self.selected_device_index = matched_preferred_device['index']
+                    logger.info(f"Selected input device from config: {matched_preferred_device['name']} (index {self.selected_device_index})")
+                    break
+
+            # No matched preferred device
+            # Prefer non-default devices as they're often external mics
+            if self.selected_device_index is None:
+                logger.info("No preferred device matched, using fallback logic")
+                selected_device = next((device for device in available_devices if 'default' not in device['name'].lower()), None)
+                if selected_device:
+                    self.selected_device_index = selected_device['index']
+                    logger.info(f"Selected input device: {selected_device['name']} (index {self.selected_device_index})")
+
             if self.selected_device_index is None:
                 logger.warning("No suitable input device found, using default")
             
@@ -422,22 +434,30 @@ class AudioProcessor:
             for i in range(numdevices):
                 try:
                     device_info = self.pyaudio.get_device_info_by_host_api_device_index(0, i)
+                    device_name = device_info.get('name')
                     max_input_channels = device_info.get('maxInputChannels')
+
+                    logger.info(f"Device {i}: {device_name}")
+                    logger.info(f"  Max Input Channels: {max_input_channels}")
+                    logger.info(f"  Default Sample Rate: {device_info.get('defaultSampleRate')}")
                     
                     # Only include input devices
                     if max_input_channels > 0:
+                        logger.info(f"Found input device: {device_name}")
+
                         devices.append({
                             'index': i,
                             'name': device_info.get('name'),
                             'channels': max_input_channels,
                             'sample_rate': device_info.get('defaultSampleRate')
                         })
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning(f"Error checking device {i}: {e}")
                     
             return devices
             
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Error getting all devices: {e}")
             return devices
     
     def set_device_index(self, device_index: int) -> bool:
