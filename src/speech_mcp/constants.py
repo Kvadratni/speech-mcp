@@ -53,7 +53,8 @@ DEFAULT_CONFIG = {
         'engine': 'faster-whisper',
         'model': 'base',
         'device': 'cpu',
-        'compute_type': 'int8'
+        'compute_type': 'int8',
+        'preferred_devices': []
     },
     'ui': {
         'theme': 'dark'

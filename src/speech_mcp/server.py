@@ -175,7 +175,19 @@ def initialize_speech_recognition():
     """Initialize speech recognition"""
     try:
         # Use the centralized speech recognition module
-        result = init_speech_recognition(model_name="base", device="cpu", compute_type="int8")
+        try:
+            # Get stt settings from config
+            from speech_mcp.config import get_setting
+
+            model_name = get_setting("stt", "model", "base")
+            device = get_setting("stt", "device", "cpu")
+            compute_type = get_setting("stt", "compute_type", "int8")
+        except ImportError:
+            model_name = "base"
+            device = "cpu"
+            compute_type = "int8"
+
+        result = init_speech_recognition(model_name=model_name, device=device, compute_type=compute_type)
         return result
     except Exception:
         return False
