@@ -1,0 +1,102 @@
+<!-- Panel template; placeholders injected by Python loader -->
+<style>:root {
+  --bg: #0b1220;
+  --panel: #0f172a;
+  --text: #e5e7eb;
+  --muted: #94a3b8;
+  --border: #1f2937;
+  --accent: #6366f1;
+  --ok: #22c55e;
+  --dim: #6b7280;
+}
+.wrap { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; color: var(--text); background: var(--bg); }
+.card { border: 1px solid var(--border); border-radius: 16px; padding: 16px; background: var(--panel); box-shadow: 0 8px 24px rgba(0,0,0,.35); min-height: 342px; }
+.header { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; }
+.title { font-size: 18px; font-weight: 700; }
+.sub { color: var(--muted); font-size: 13px; }
+.row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:8px; }
+.btn { appearance:none; border:none; border-radius:10px; padding:10px 14px; cursor:pointer; color:#fff; font-weight:600; letter-spacing:.2px; box-shadow: inset 0 0 0 1px rgba(255,255,255,.05), 0 6px 16px rgba(0,0,0,.25); transition: transform .06s ease, filter .2s ease; }
+.btn:active { transform: translateY(1px); filter: saturate(1.1); }
+.btn-primary { background: var(--accent); }
+.btn-ok { background: var(--ok); }
+.btn-dim { background: var(--dim); }
+.select { background: var(--panel); color:var(--text); border:1px solid var(--border); border-radius:10px; padding:8px 10px; min-width:220px; }
+.input { background: var(--panel); color:var(--text); border:1px solid var(--border); border-radius:10px; padding:8px 10px; min-width:260px; }
+.grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:14px; margin-top:14px; }
+.box { background:#0b1220; border:1px solid var(--border); border-radius:12px; padding:12px; min-height:60px; }
+.label { color:var(--muted); font-size:12px; margin-bottom:6px; }
+.kpi { font-size:14px; line-height:1.6; }
+.pre { white-space:pre-wrap; color:#cbd5e1; font-size:13px; margin:0; }
+.waves { display:flex; gap:4px; align-items:flex-end; height:36px; padding:6px; border-radius:10px; border:1px solid var(--border); background: var(--panel); transition: opacity .25s ease; }
+.bar { width:6px; background: var(--accent); border-radius:4px; animation: eq 1.2s ease-in-out infinite; opacity:.95; }
+.bar:nth-child(2){ animation-delay: .08s; } .bar:nth-child(3){ animation-delay: .16s; } .bar:nth-child(4){ animation-delay: .24s; } .bar:nth-child(5){ animation-delay: .32s; } .bar:nth-child(6){ animation-delay: .40s; } .bar:nth-child(7){ animation-delay: .48s; } .bar:nth-child(8){ animation-delay: .56s; } .bar:nth-child(9){ animation-delay: .64s; } .bar:nth-child(10){ animation-delay: .72s; } .bar:nth-child(11){ animation-delay: .80s; } .bar:nth-child(12){ animation-delay: .88s; }
+@keyframes eq { 0%, 100% { height: 6px; } 50% { height: 30px; } }
+
+</style>
+<div class="wrap">
+  <div class="card">
+    <div class="header">
+      <div>
+        <div class="title">Speech Console</div>
+        <div class="sub">Controls and live status for listening/speaking with voice selection.</div>
+      </div>
+      <div class="sub" id="uiVer"></div>
+    </div>
+    <div class="row">
+      <button id="convBtn" class="btn btn-primary" onclick="startConversation()">Start Conversation</button>
+      <select id="voiceSelect" class="select" onchange="onVoiceChange(this.value)">
+        <option value="af_heart">af_heart (default)</option>
+        <option value="am_michael">am_michael</option>
+        <option value="bm_daniel">bm_daniel</option>
+        <option value="bf_emma">bf_emma</option>
+        <option value="ff_siwis">ff_siwis</option>
+      </select>
+      <select id="themeSelect" class="select" onchange="onThemeChange(this.value)">
+        <option value="midnight">Midnight Indigo (dark)</option>
+        <option value="glacier">Glacier Light</option>
+        <option value="emerald">Emerald Slate (dark)</option>
+      </select>
+      <input id="sayInput" class="input" type="text" placeholder="Type something to say…" />
+      <button class="btn btn-ok" onclick="sayFromInput()">🗣 Say</button>
+    </div>
+    <div class="grid">
+      <div>
+        <div class="label">Listening</div>
+        <div id="listenWaves" class="waves"></div>
+      </div>
+      <div>
+        <div class="label">Speaking</div>
+        <div id="speakWaves" class="waves"></div>
+      </div>
+    </div>
+    <div class="grid">
+      <div>
+        <div class="label">Status</div>
+        <div class="box kpi">
+          <div><strong>Listening:</strong> <span id="kpiListening">{{listening}}</span></div>
+          <div><strong>Speaking:</strong> <span id="kpiSpeaking">{{speaking}}</span></div>
+          <div><strong>Voice:</strong> <span id="kpiVoice">{{voice_pref}}</span></div>
+        </div>
+      </div>
+      <div>
+        <div class="label">Last transcript</div>
+        <div class="box"><pre class="pre" id="lastTranscript">{{last_transcript}}</pre></div>
+      </div>
+      <div>
+        <div class="label">Last response</div>
+        <div class="box"><pre class="pre" id="lastResponse">{{last_response}}</pre></div>
+      </div>
+    </div>
+    <div id="uiStatus" class="sub" style="margin-top:10px;"></div>
+    <div class="grid">
+      <div>
+        <div class="label">Network (debug)</div>
+        <div class="box"><pre class="pre" id="netLog"></pre></div>
+      </div>
+    </div>
+  </div>
+  <script>"use strict";(()=>{function r(e){let t=document.getElementById("netLog");t&&(t.textContent=`${new Date().toISOString()} ${e}
+`+t.textContent)}function i(e){r(`PROMPT ${e}`);let t=document.getElementById("uiStatus");t&&(t.textContent=`Prompt: ${e}`);try{let n=window.parent;if(!n)return;n.postMessage({type:"prompt",payload:{prompt:e}},"*")}catch{}}window.startListening=async()=>{window.setListening(!0),window.setSpeaking(!1);try{i("listen")}catch{}};window.stopAll=async()=>{try{i("stop")}catch{}};window.onVoiceChange=async e=>{let t=document.getElementById("kpiVoice");t&&(t.textContent=e);try{i(`set_voice ${e}`)}catch{}};window.onThemeChange=e=>{d(e)};window.promptSpeak=()=>{let e=window.prompt("Text to speak");if(e&&e.trim()){window.setSpeaking(!0),window.setListening(!1);let t=document.getElementById("lastResponse");t&&(t.textContent=e.trim()),i(`speak ${e.trim()}`)}};window.sayFromInput=()=>{let t=(document.getElementById("sayInput")?.value||"").trim();if(!t)return;window.setSpeaking(!0),window.setListening(!1);let n=document.getElementById("lastResponse");n&&(n.textContent=t),i(`speak ${t}`)};window.startConversation=async()=>{let e=document.getElementById("convBtn");i("listen"),e&&(e.textContent="Listening\u2026",setTimeout(()=>{e&&(e.textContent="Start Conversation")},1e3))};try{let e=window.SPEECH_BASE,t=window.SPEECH_TOKEN;e&&r(`BOOT BASE=${e}`),t&&r(`BOOT TOKEN=${t}`)}catch{}function l(e){if(e){e.innerHTML="";for(let t=0;t<12;t++){let n=document.createElement("div");n.className="bar",e.appendChild(n)}}}window.setListening=e=>{let t=document.getElementById("kpiListening");t&&(t.textContent=e?"true":"false");let n=document.getElementById("listenWaves");n&&(n.style.opacity=e?"1":".35")};window.setSpeaking=e=>{let t=document.getElementById("kpiSpeaking");t&&(t.textContent=e?"true":"false");let n=document.getElementById("speakWaves");n&&(n.style.opacity=e?"1":".35")};l(document.getElementById("listenWaves"));l(document.getElementById("speakWaves"));var m=(document.getElementById("kpiListening")?.textContent||"false")==="true",u=(document.getElementById("kpiSpeaking")?.textContent||"false")==="true";window.setListening(m);window.setSpeaking(u);function d(e){let t=document.documentElement,n={midnight:{"--bg":"#0a0f1e","--panel":"#111729","--text":"#e8ecf1","--muted":"#99a3b3","--border":"#20283b","--accent":"#6ea8fe","--ok":"#38e1a8","--dim":"#56607a"},glacier:{"--bg":"#f6f7fb","--panel":"#ffffff","--text":"#0d1220","--muted":"#5c6785","--border":"#e4e8f0","--accent":"#3b82f6","--ok":"#10b981","--dim":"#9aa3b2"},emerald:{"--bg":"#0c1210","--panel":"#111814","--text":"#e7f0eb","--muted":"#97a39c","--border":"#1d2a23","--accent":"#34d399","--ok":"#22c55e","--dim":"#5a6a61"}},o=n[e]||n.midnight;Object.entries(o).forEach(([a,s])=>t.style.setProperty(a,s))}f();function f(){let t=typeof window.matchMedia=="function"&&window.matchMedia("(prefers-color-scheme: dark)").matches?"midnight":"glacier";d(t);let n=document.getElementById("themeSelect");if(n&&(n.value=t),typeof window.matchMedia=="function"){let o=window.matchMedia("(prefers-color-scheme: dark)");o&&"addEventListener"in o?o.addEventListener("change",a=>{let s=a.matches?"midnight":"glacier";d(s);let c=document.getElementById("themeSelect");c&&(c.value=s)}):"addListener"in o&&o.addListener(a=>{let s=a.matches?"midnight":"glacier";d(s);let c=document.getElementById("themeSelect");c&&(c.value=s)})}}try{let e=document.getElementById("uiVer");if(e){let t=new Date().toISOString().replace("T"," ").replace("Z","");e.textContent=`UI v0.35 (${t})`}}catch{}function p(){let e=document.documentElement.scrollHeight,t=document.documentElement.scrollWidth,n={height:e,width:t};window.parent&&window.parent.postMessage({type:"ui-size-change",payload:n},"*")}(function(){let t=!1,n=()=>{t||(t=!0,requestAnimationFrame(()=>{t=!1,p()}))};if("ResizeObserver"in window){let o=new ResizeObserver(()=>n());o.observe(document.documentElement),o.observe(document.body)}else window.addEventListener("resize",n);document.addEventListener("DOMContentLoaded",n),window.addEventListener("load",n),setTimeout(n,0)})();})();
+</script>
+</div>
+

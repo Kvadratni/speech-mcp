@@ -7,26 +7,366 @@ import tempfile
 import subprocess
 import psutil
 import importlib.util
-from typing import Dict, List, Union, Optional, Callable
+from importlib import resources as pkg_resources
+from typing import Dict, List, Union, Optional, Callable, Any
 from pathlib import Path
 import numpy as np
 import soundfile as sf
+import socket
+import random
+import string
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
+from urllib.parse import urlparse, parse_qs
+from typing import Tuple
+import queue as _queue
 
 from mcp.server.fastmcp import FastMCP
 from mcp.shared.exceptions import McpError
 from mcp.types import ErrorData, INTERNAL_ERROR, INVALID_PARAMS
-
+from mcp_ui_server import create_UIResource
+from mcp_ui_server.core import UIResource
 # Import the centralized logger
 from speech_mcp.utils.logger import get_logger
 
 # Get a logger for this module
 logger = get_logger(__name__, component="server")
 
+# =============================================================
+# SSE sidecar (loopback HTTP server for UI state streaming)
+# =============================================================
+_sse_server: ThreadingHTTPServer | None = None
+_sse_thread: threading.Thread | None = None
+_sse_port: int | None = None
+_sse_token: str | None = None
+_sse_clients: list[tuple[_queue.Queue, object]] = []  # (queue, wfile)
+_sse_lock = threading.Lock()
+
+def _random_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+def _random_token(n: int = 24) -> str:
+    return ''.join(random.choices(string.ascii_letters + string.digits, k=n))
+
+def _sse_broadcast(event: str, data: dict) -> None:
+    payload = f"event: {event}\ndata: {json.dumps(data)}\n\n".encode("utf-8")
+    with _sse_lock:
+        stale: list[int] = []
+        for idx, (q, wfile) in enumerate(_sse_clients):
+            try:
+                q.put(payload, block=False)
+            except Exception:
+                stale.append(idx)
+        for idx in reversed(stale):
+            _sse_clients.pop(idx)
+
+class _SSEHandler(BaseHTTPRequestHandler):
+    server_version = "SpeechSSE/1.0"
+    protocol_version = "HTTP/1.1"
+
+    def _set_cors(self):
+        # CORS for iframe-origin requests
+        origin = self.headers.get('Origin') or '*'
+        self.send_header("Access-Control-Allow-Origin", origin)
+        self.send_header("Vary", "Origin")
+        self.send_header("Access-Control-Allow-Headers", "*, content-type")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        # Private Network Access (Chromium/Electron)
+        if self.headers.get('Access-Control-Request-Private-Network') == 'true':
+            self.send_header("Access-Control-Allow-Private-Network", "true")
+
+    def do_OPTIONS(self):  # noqa: N802
+        self.send_response(204)
+        self._set_cors()
+        self.send_header("Access-Control-Max-Age", "600")
+        self.send_header("Content-Length", "0")
+        self.send_header("Connection", "close")
+        self.end_headers()
+
+    def do_GET(self):  # noqa: N802
+        global _sse_token
+        parsed = urlparse(self.path)
+        if parsed.path == "/events":
+            params = parse_qs(parsed.query)
+            token = (params.get("token") or [""])[0]
+            if not _sse_token or token != _sse_token:
+                self.send_response(403)
+                self._set_cors()
+                self.end_headers()
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self._set_cors()
+            self.end_headers()
+            q: _queue.Queue = _queue.Queue()
+            with _sse_lock:
+                _sse_clients.append((q, self.wfile))
+            # Initial state
+            try:
+                state = state_manager.get_state()
+                init = {"listening": bool(state.get("listening")), "speaking": bool(state.get("speaking")), "voice": state.get("voice_preference")}
+                self.wfile.write(f"event: state\ndata: {json.dumps(init)}\n\n".encode("utf-8"))
+                self.wfile.flush()
+            except Exception:
+                pass
+            try:
+                while True:
+                    try:
+                        payload = q.get(timeout=15)
+                        self.wfile.write(payload)
+                        self.wfile.flush()
+                    except _queue.Empty:
+                        try:
+                            self.wfile.write(b":\n\n")
+                            self.wfile.flush()
+                        except Exception:
+                            break
+            except Exception:
+                pass
+            finally:
+                with _sse_lock:
+                    for idx, (qq, wf) in enumerate(list(_sse_clients)):
+                        if qq is q:
+                            _sse_clients.pop(idx)
+                            break
+            return
+        elif parsed.path == "/state":
+            st = state_manager.get_state()
+            body = json.dumps({
+                "listening": bool(st.get("listening")),
+                "speaking": bool(st.get("speaking")),
+                "voice": st.get("voice_preference"),
+            }).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self._set_cors()
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        elif parsed.path == "/speak":
+            # GET fallback: run TTS asynchronously and return immediately
+            params = parse_qs(parsed.query)
+            text = (params.get("text") or [""])[0]
+            def _bg():
+                try:
+                    _sse_broadcast("state", {"speaking": True, "listening": bool(speech_state.get("listening"))})
+                    speak_text(text)
+                finally:
+                    _sse_broadcast("state", {"speaking": False, "listening": bool(speech_state.get("listening"))})
+                    state_manager.update_state({"last_response": text}, persist=False)
+            threading.Thread(target=_bg, daemon=True).start()
+            body = json.dumps({"ok": True, "accepted": True}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Connection", "close")
+            self._set_cors()
+            self.end_headers()
+            try:
+                self.wfile.write(body); self.wfile.flush()
+            except Exception:
+                pass
+            return
+        elif parsed.path == "/listen":
+            # GET fallback: start one-shot listen in background and return accepted
+            def _bg():
+                try:
+                    speech_state["listening"] = True
+                    save_speech_state(speech_state, False)
+                    _sse_broadcast("state", {"listening": True, "speaking": bool(speech_state.get("speaking"))})
+                    text = listen_for_speech() or ""
+                finally:
+                    speech_state["listening"] = False
+                    save_speech_state(speech_state, False)
+                    _sse_broadcast("state", {"listening": False, "speaking": bool(speech_state.get("speaking"))})
+                state_manager.update_state({"last_transcript": text}, persist=False)
+                _sse_broadcast("transcriptFinal", {"text": text})
+            threading.Thread(target=_bg, daemon=True).start()
+            body = json.dumps({"ok": True, "accepted": True}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Connection", "close")
+            self._set_cors()
+            self.end_headers()
+            try:
+                self.wfile.write(body); self.wfile.flush()
+            except Exception:
+                pass
+            return
+        elif parsed.path == "/stop":
+            speech_state["listening"] = False
+            speech_state["speaking"] = False
+            save_speech_state(speech_state, False)
+            _sse_broadcast("state", {"listening": False, "speaking": False})
+            body = json.dumps({"ok": True}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Connection", "close")
+            self._set_cors()
+            self.end_headers()
+            try:
+                self.wfile.write(body); self.wfile.flush()
+            except Exception:
+                pass
+            return
+        elif parsed.path == "/voice":
+            params = parse_qs(parsed.query)
+            voice = (params.get("voice") or [""])[0].strip()
+            if voice:
+                state_manager.update_state({"voice_preference": voice}, persist=True)
+                try:
+                    if tts_engine and hasattr(tts_engine, "set_voice"):
+                        tts_engine.set_voice(voice)
+                except Exception:
+                    pass
+            body = json.dumps({"ok": True, "voice": voice}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Connection", "close")
+            self._set_cors()
+            self.end_headers()
+            try:
+                self.wfile.write(body); self.wfile.flush()
+            except Exception:
+                pass
+            return
+        else:
+            self.send_response(404)
+            self._set_cors()
+            self.end_headers()
+
+    def do_POST(self):  # noqa: N802
+        parsed = urlparse(self.path)
+        length = int(self.headers.get('Content-Length', '0') or '0')
+        raw = self.rfile.read(length) if length else b"{}"
+        try:
+            payload = json.loads(raw.decode("utf-8") or "{}")
+        except Exception:
+            payload = {}
+        logger.info(f"HTTP POST {parsed.path}")
+        if parsed.path == "/listen":
+            try:
+                speech_state["listening"] = True
+                save_speech_state(speech_state, False)
+                _sse_broadcast("state", {"listening": True, "speaking": bool(speech_state.get("speaking"))})
+                text = listen_for_speech() or ""
+            finally:
+                speech_state["listening"] = False
+                save_speech_state(speech_state, False)
+                _sse_broadcast("state", {"listening": False, "speaking": bool(speech_state.get("speaking"))})
+            state_manager.update_state({"last_transcript": text}, persist=False)
+            _sse_broadcast("transcriptFinal", {"text": text})
+            body = json.dumps({"transcript": text}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Connection", "close")
+            self._set_cors()
+            self.end_headers()
+            self.wfile.write(body)
+            try:
+                self.wfile.flush()
+            except Exception:
+                pass
+            return
+        if parsed.path == "/speak":
+            # Async TTS: accept and return immediately
+            text = str(payload.get("text") or "")
+            def _bg():
+                try:
+                    _sse_broadcast("state", {"speaking": True, "listening": bool(speech_state.get("listening"))})
+                    speak_text(text)
+                finally:
+                    _sse_broadcast("state", {"speaking": False, "listening": bool(speech_state.get("listening"))})
+                state_manager.update_state({"last_response": text}, persist=False)
+            threading.Thread(target=_bg, daemon=True).start()
+            body = json.dumps({"ok": True, "accepted": True}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Connection", "close")
+            self._set_cors()
+            self.end_headers()
+            self.wfile.write(body)
+            try:
+                self.wfile.flush()
+            except Exception:
+                pass
+            return
+        if parsed.path == "/voice":
+            voice = str(payload.get("voice") or "").strip()
+            if voice:
+                state_manager.update_state({"voice_preference": voice}, persist=True)
+                try:
+                    if tts_engine and hasattr(tts_engine, "set_voice"):
+                        tts_engine.set_voice(voice)
+                except Exception:
+                    pass
+            body = json.dumps({"ok": True, "voice": voice}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Connection", "close")
+            self._set_cors()
+            self.end_headers()
+            try:
+                self.wfile.write(body)
+                self.wfile.flush()
+            except Exception:
+                pass
+            return
+        if parsed.path == "/stop":
+            speech_state["listening"] = False
+            speech_state["speaking"] = False
+            save_speech_state(speech_state, False)
+            _sse_broadcast("state", {"listening": False, "speaking": False})
+            body = json.dumps({"ok": True}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Connection", "close")
+            self._set_cors()
+            self.end_headers()
+            try:
+                self.wfile.write(body)
+                self.wfile.flush()
+            except Exception:
+                pass
+            return
+        self.send_response(404)
+        self._set_cors()
+        self.end_headers()
+
+def _ensure_sse_sidecar() -> Tuple[str, str]:
+    """Start SSE sidecar if not running. Returns (base_url, token)."""
+    global _sse_server, _sse_thread, _sse_port, _sse_token
+    if _sse_server is not None and _sse_port and _sse_token:
+        base = f"http://127.0.0.1:{_sse_port}"
+        # Log on subsequent calls as well so users can discover values
+        logger.info(f"SSE sidecar already running: BASE={base} TOKEN={_sse_token}")
+        return (base, _sse_token)
+    _sse_port = _random_port()
+    _sse_token = _random_token()
+    _sse_server = ThreadingHTTPServer(("127.0.0.1", _sse_port), _SSEHandler)
+    _sse_thread = threading.Thread(target=_sse_server.serve_forever, daemon=True)
+    _sse_thread.start()
+    base = f"http://127.0.0.1:{_sse_port}"
+    logger.info(f"Started SSE sidecar at {base}")
+    # Print explicit BASE/TOKEN lines for easy grep/curl
+    logger.info(f"SSE BASE={base}")
+    logger.info(f"SSE TOKEN={_sse_token}")
+    return (base, _sse_token)
+
 # Import centralized constants
 from speech_mcp.constants import (
     SERVER_LOG_FILE,
-    TRANSCRIPTION_FILE, RESPONSE_FILE, COMMAND_FILE,
-    CMD_LISTEN, CMD_SPEAK, CMD_IDLE, CMD_UI_READY, CMD_UI_CLOSED,
+    TRANSCRIPTION_FILE,
     SPEECH_TIMEOUT, ENV_TTS_VOICE
 )
 
@@ -140,29 +480,7 @@ def save_speech_state(state, create_response_file=False):
     try:
         # Update state in StateManager
         state_manager.update_state(state, persist=True)
-        
-        # Only create response file if specifically requested
-        if create_response_file:
-            # Create or update response file for UI communication
-            # This helps ensure the UI is properly notified of state changes
-            if state.get("speaking", False):
-                # If speaking, write the response to the file for the UI to pick up
-                logger.debug(f"Creating response file with text: {state.get('last_response', '')[:30]}...")
-                with open(RESPONSE_FILE, 'w') as f:
-                    f.write(state.get("last_response", ""))
-        
-        # Create a special command file to signal state changes to the UI
-        command = ""
-        if state.get("listening", False):
-            command = CMD_LISTEN
-        elif state.get("speaking", False):
-            command = CMD_SPEAK
-        else:
-            command = CMD_IDLE
-        
-        logger.debug(f"Writing command {command} to {COMMAND_FILE}")
-        with open(COMMAND_FILE, 'w') as f:
-            f.write(command)
+        # UI signaling via files is deprecated; MCP UI clients should reflect state directly
     except Exception as e:
         logger.error(f"Error saving speech state: {e}")
         pass
@@ -282,46 +600,6 @@ def initialize_tts():
             
     except Exception:
         return False
-
-def ensure_ui_is_running():
-    """Ensure the PyQt UI process is running"""
-    global speech_state
-    
-    # Check if UI is already active
-    if speech_state.get("ui_active", False) and speech_state.get("ui_process_id"):
-        # Check if the process is actually running
-        try:
-            process_id = speech_state["ui_process_id"]
-            if psutil.pid_exists(process_id):
-                process = psutil.Process(process_id)
-                if process.status() != psutil.STATUS_ZOMBIE:
-                    return True
-        except Exception:
-            pass
-    
-    # Check for any existing UI processes by looking for Python processes running speech_mcp.ui
-    try:
-        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-            try:
-                cmdline = proc.info.get('cmdline', [])
-                if cmdline and len(cmdline) >= 3:
-                    # Look specifically for PyQt UI processes
-                    if 'python' in cmdline[0].lower() and '-m' in cmdline[1] and 'speech_mcp.ui' in cmdline[2]:
-                        # Found an existing PyQt UI process
-                        
-                        # Update our state to track this process
-                        speech_state["ui_active"] = True
-                        speech_state["ui_process_id"] = proc.info['pid']
-                        save_speech_state(speech_state, False)
-                        
-                        return True
-            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                continue
-    except Exception:
-        pass
-    
-    # No UI process found, we'll need to start one using the launch_ui tool
-    return False
 
 def record_audio():
     """Record audio from the microphone and return the audio data"""
@@ -577,39 +855,6 @@ def listen_for_speech() -> str:
             )
         )
 
-def cleanup_ui_process():
-    """Clean up the PyQt UI process when the server shuts down"""
-    global speech_state
-    
-    if speech_state.get("ui_active", False) and speech_state.get("ui_process_id"):
-        try:
-            process_id = speech_state["ui_process_id"]
-            if psutil.pid_exists(process_id):
-                process = psutil.Process(process_id)
-                process.terminate()
-                try:
-                    process.wait(timeout=3)
-                except psutil.TimeoutExpired:
-                    process.kill()
-            
-            # Update state
-            speech_state["ui_active"] = False
-            speech_state["ui_process_id"] = None
-            save_speech_state(speech_state, False)
-            
-            # Write a UI_CLOSED command to the command file
-            try:
-                with open(COMMAND_FILE, 'w') as f:
-                    f.write(CMD_UI_CLOSED)
-            except Exception:
-                pass
-        except Exception:
-            pass
-
-# Register cleanup function to be called on exit
-import atexit
-atexit.register(cleanup_ui_process)
-
 class VoiceInstance:
     """Manages a single Kokoro TTS voice instance"""
     def __init__(self, voice_id: str):
@@ -769,380 +1014,307 @@ class VoiceManager:
 # Global voice manager
 voice_manager = VoiceManager()
 
-@mcp.tool()
-def launch_ui() -> str:
-    """
-    Launch the speech UI.
-    
-    This will start the speech UI window that shows the microphone status and speech visualization.
-    The UI is required for visual feedback during speech recognition.
-    
-    Returns:
-        A message indicating whether the UI was successfully launched.
-    """
-    global speech_state
-    
-    # Check if UI is already running
-    if ensure_ui_is_running():
-        return "Speech UI is already running."
-    
-    # Check if a voice preference is saved
-    has_voice_preference = False
-    try:
-        # Import config module if available
-        if importlib.util.find_spec("speech_mcp.config") is not None:
-            from speech_mcp.config import get_setting, get_env_setting
-            
-            # Check environment variable
-            env_voice = get_env_setting(ENV_TTS_VOICE)
-            if env_voice:
-                has_voice_preference = True
-            else:
-                # Check config file
-                config_voice = get_setting("tts", "voice", None)
-                if config_voice:
-                    has_voice_preference = True
-    except Exception:
-        pass
-    
-    # Start a new UI process
-    try:
-        # Check for any existing UI processes first to prevent duplicates
-        existing_ui = False
-        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-            try:
-                cmdline = proc.info.get('cmdline', [])
-                if cmdline and len(cmdline) >= 3:
-                    # Look specifically for PyQt UI processes
-                    if 'python' in cmdline[0].lower() and '-m' in cmdline[1] and 'speech_mcp.ui' in cmdline[2]:
-                        # Found an existing PyQt UI process
-                        existing_ui = True
-                        
-                        # Update our state to track this process
-                        speech_state["ui_active"] = True
-                        speech_state["ui_process_id"] = proc.info['pid']
-                        save_speech_state(speech_state, False)
-                        
-                        return f"Speech PyQt UI is already running with PID {proc.info['pid']}."
-            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                continue
-        
-        # Start a new UI process if none exists
-        if not existing_ui:
-            # Clear any existing command file
-            try:
-                if os.path.exists(COMMAND_FILE):
-                    os.remove(COMMAND_FILE)
-            except Exception:
-                pass
-            
-            # Start the UI process
-            ui_process = subprocess.Popen(
-                [sys.executable, "-m", "speech_mcp.ui"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True
-            )
-            
-            # Update the speech state
-            speech_state["ui_active"] = True
-            speech_state["ui_process_id"] = ui_process.pid
-            save_speech_state(speech_state, False)
-            
-            # Wait for UI to fully initialize by checking for the UI_READY command
-            max_wait_time = 10  # Maximum wait time in seconds
-            wait_interval = 0.2  # Check every 200ms
-            waited_time = 0
-            ui_ready = False
-            
-            while waited_time < max_wait_time:
-                # Check if the process is still running
-                if not psutil.pid_exists(ui_process.pid):
-                    return "ERROR: PyQt UI process terminated unexpectedly."
-                
-                # Check if the command file exists and contains UI_READY
-                if os.path.exists(COMMAND_FILE):
-                    try:
-                        with open(COMMAND_FILE, 'r') as f:
-                            command = f.read().strip()
-                            if command == CMD_UI_READY:
-                                ui_ready = True
-                                break
-                    except Exception:
-                        pass
-                
-                # Wait before checking again
-                time.sleep(wait_interval)
-                waited_time += wait_interval
-            
-            if ui_ready:
-                # Check if we have a voice preference
-                if has_voice_preference:
-                    return f"PyQt Speech UI launched successfully with PID {ui_process.pid} and is ready."
-                else:
-                    return f"PyQt Speech UI launched successfully with PID {ui_process.pid}. Please select a voice to continue."
-            else:
-                return f"PyQt Speech UI launched with PID {ui_process.pid}, but readiness state is unknown."
-    except Exception as e:
-        return f"ERROR: Failed to launch PyQt Speech UI: {str(e)}"
 
 @mcp.tool()
-def start_conversation() -> str:
+def panel_ui() -> list[UIResource]:
     """
-    Start a voice conversation by beginning to listen.
-    
-    This will initialize the speech recognition system and immediately start listening for user input.
-    
-    Returns:
-        The transcription of the user's speech.
+    UI tool: returns the unified Speech panel UI.
+    All actions (listen/speak/voice) are driven inside the iframe via the loopback sidecar.
     """
-    global speech_state
-    
-    # Force reset the state
-    state_manager.update_state({
-        "listening": False,
-        "speaking": False,
-        "last_transcript": "",
-        "last_response": "",
-        "ui_active": False,
-        "ui_process_id": None,
-        "error": None
-    })
-    
-    # Initialize speech recognition if not already done
-    if not initialize_speech_recognition():
-        return "ERROR: Failed to initialize speech recognition."
-    
-    # Check if UI is running but don't launch it automatically
-    ensure_ui_is_running()
-    
-    # Start listening
+    html = _full_panel_html("")
+    panel = _create_ui_resource("ui://speech/panel", html, min_height=342)
+    return [panel]
+
+@mcp.tool()
+def listen() -> str:
+    """
+    Start listening via streaming recognition and return the final transcript.
+    """
     try:
-        # Set listening state before starting to ensure UI shows the correct state
-        speech_state["listening"] = True
-        save_speech_state(speech_state, False)
-        
-        # Create a special command file to signal LISTEN state to the UI
-        # This ensures the audio blips are played
+        text = listen_for_speech()
+        return text or ""
+    except Exception as e:
+        return f"ERROR: {e}"
+
+
+@mcp.tool()
+def speak(text: str) -> str:
+    """
+    Speak the provided text using the configured TTS engine.
+    """
+    try:
+        return speak_text(text or "")
+    except Exception as e:
+        return f"ERROR: {e}"
+
+
+@mcp.tool()
+def set_voice(voice: str) -> str:
+    """
+    Set the preferred voice for TTS.
+    """
+    try:
+        voice = (voice or "").strip()
+        state_manager.update_state({"voice_preference": voice}, persist=True)
         try:
-            with open(COMMAND_FILE, 'w') as f:
-                f.write(CMD_LISTEN)
+            if tts_engine and hasattr(tts_engine, "set_voice"):
+                tts_engine.set_voice(voice)
         except Exception:
             pass
-        
-        # Use a queue to get the result from the thread
-        import queue
-        result_queue = queue.Queue()
-        
-        def listen_and_queue():
-            try:
-                result = listen_for_speech()
-                result_queue.put(result)
-            except Exception as e:
-                result_queue.put(f"ERROR: {str(e)}")
-        
-        # Start the thread
-        listen_thread = threading.Thread(target=listen_and_queue)
-        listen_thread.daemon = True
-        listen_thread.start()
-        
-        # Wait for the result with a timeout
-        try:
-            transcription = result_queue.get(timeout=SPEECH_TIMEOUT)
-            
-            # Signal that we're done listening
-            speech_state["listening"] = False
-            save_speech_state(speech_state, False)
-            
-            # Create a special command file to signal IDLE state to the UI
-            # This ensures the audio blips are played
-            try:
-                with open(COMMAND_FILE, 'w') as f:
-                    f.write(CMD_IDLE)
-            except Exception:
-                pass
-            
-            return transcription
-        except queue.Empty:
-            # Update state to stop listening
-            speech_state["listening"] = False
-            save_speech_state(speech_state, False)
-            
-            # Signal that we're done listening
-            try:
-                with open(COMMAND_FILE, 'w') as f:
-                    f.write(CMD_IDLE)
-            except Exception:
-                pass
-            
-            # Create an emergency transcription
-            emergency_message = f"ERROR: Timeout waiting for speech transcription after {SPEECH_TIMEOUT} seconds."
-            return emergency_message
-    
+        return f"OK: voice={voice}"
     except Exception as e:
-        # Update state to stop listening
-        speech_state["listening"] = False
-        save_speech_state(speech_state, False)
-        
-        # Signal that we're done listening
-        try:
-            with open(COMMAND_FILE, 'w') as f:
-                f.write(CMD_IDLE)
-        except Exception:
-            pass
-        
-        # Return an error message instead of raising an exception
-        error_message = f"ERROR: Failed to start conversation: {str(e)}"
-        return error_message
+        return f"ERROR: {e}"
 
-@mcp.tool()
-def reply(text: str, wait_for_response: bool = True) -> str:
-    """
-    Speak the provided text and optionally listen for a response.
-    
-    This will speak the given text and then immediately start listening for user input
-    if wait_for_response is True. If wait_for_response is False, it will just speak
-    the text without listening for a response.
-    
-    Args:
-        text: The text to speak to the user
-        wait_for_response: Whether to wait for and return the user's response (default: True)
-        
-    Returns:
-        If wait_for_response is True: The transcription of the user's response.
-        If wait_for_response is False: A confirmation message that the text was spoken.
-    """
-    global speech_state
-    
-    # Reset listening and speaking states to ensure we're in a clean state
-    speech_state["listening"] = False
-    speech_state["speaking"] = False
-    save_speech_state(speech_state, False)
-    
-    # Clear any existing response file to prevent double-speaking
-    try:
-        if os.path.exists(RESPONSE_FILE):
-            os.remove(RESPONSE_FILE)
-    except Exception:
-        pass
-    
-    # Speak the text
-    try:
-        speak_text(text)
-        
-        # Add a small delay to ensure speaking is complete
-        time.sleep(0.5)
-    except Exception as e:
-        return f"ERROR: Failed to speak text: {str(e)}"
-    
-    # If we don't need to wait for a response, return now
-    if not wait_for_response:
-        return f"Spoke: {text}"
-    
-    # Check if UI is running but don't launch it automatically
-    ensure_ui_is_running()
-    
-    # Start listening for response
-    try:
-        # Use a queue to get the result from the thread
-        import queue
-        result_queue = queue.Queue()
-        
-        def listen_and_queue():
-            try:
-                result = listen_for_speech()
-                result_queue.put(result)
-            except Exception as e:
-                result_queue.put(f"ERROR: {str(e)}")
-        
-        # Start the thread
-        listen_thread = threading.Thread(target=listen_and_queue)
-        listen_thread.daemon = True
-        listen_thread.start()
-        
-        # Wait for the result with a timeout
-        try:
-            transcription = result_queue.get(timeout=SPEECH_TIMEOUT)
-            return transcription
-        except queue.Empty:
-            # Update state to stop listening
-            speech_state["listening"] = False
-            save_speech_state(speech_state, False)
-            
-            # Create an emergency transcription
-            emergency_message = f"ERROR: Timeout waiting for speech transcription after {SPEECH_TIMEOUT} seconds."
-            return emergency_message
-    
-    except Exception as e:
-        # Update state to stop listening
-        speech_state["listening"] = False
-        save_speech_state(speech_state, False)
-        
-        # Return an error message instead of raising an exception
-        error_message = f"ERROR: Failed to listen for response: {str(e)}"
-        return error_message
+ 
 
-@mcp.tool()
-def close_ui() -> str:
+ 
+
+def _create_ui_resource(uri: str, html_string: str, min_height: int = 342) -> Dict[str, Any]:
+    """Create a UIResource-like dictionary consumable by MCP UI clients.
+
+    The structure mirrors the example in mcp-ui, returning a dict with keys:
+    - uri: unique resource URI (e.g., ui://speech/controls)
+    - content: { type: "rawHtml", htmlString: "..." }
+    - encoding: "text"
     """
-    Close the speech UI window.
-    
-    This will gracefully shut down the speech UI window if it's currently running.
-    Use this when you're done with voice interaction to clean up resources.
-    
-    Returns:
-        A message indicating whether the UI was successfully closed.
-    """
-    global speech_state
-    
-    # Check if UI is running
-    if speech_state.get("ui_active", False) and speech_state.get("ui_process_id"):
-        try:
-            process_id = speech_state["ui_process_id"]
-            if psutil.pid_exists(process_id):
-                # Check if it's actually our UI process (not just a reused PID)
-                try:
-                    process = psutil.Process(process_id)
-                    cmdline = process.cmdline()
-                    if not any('speech_mcp.ui' in cmd for cmd in cmdline):
-                        # Update state since this isn't our process
-                        speech_state["ui_active"] = False
-                        speech_state["ui_process_id"] = None
-                        save_speech_state(speech_state, False)
-                        return "No active Speech UI found to close (PID was reused by another process)."
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    pass
-                
-                # First try to gracefully close the UI by writing a UI_CLOSED command
-                try:
-                    with open(COMMAND_FILE, 'w') as f:
-                        f.write(CMD_UI_CLOSED)
-                    
-                    # Give the UI a moment to close gracefully
-                    time.sleep(1.0)
-                except Exception:
-                    pass
-                
-                # Now check if the process is still running
-                if psutil.pid_exists(process_id):
-                    # Process is still running, terminate it
-                    process = psutil.Process(process_id)
-                    process.terminate()
-                    try:
-                        process.wait(timeout=3)
-                    except psutil.TimeoutExpired:
-                        process.kill()
-            
-            # Update state
-            speech_state["ui_active"] = False
-            speech_state["ui_process_id"] = None
-            save_speech_state(speech_state, False)
-            
-            return "Speech UI was closed successfully."
-        except Exception as e:
-            return f"ERROR: Failed to close Speech UI: {str(e)}"
+    res = create_UIResource({
+            "uri": uri,
+            "content": {
+                "type": "rawHtml",
+                "htmlString": html_string,
+                # Ensure the client allocates at least this much vertical space
+                "height": min_height,
+            },
+            "encoding": "text",
+        })
+    return res
+
+def _full_panel_html(extra_inline_js: str = "") -> str:
+    from importlib import resources as pkg
+    s = state_manager.get_state()
+    v = {
+        "listening": "true" if s.get("listening") else "false",
+        "speaking": "true" if s.get("speaking") else "false",
+        "voice_pref": s.get("voice_preference") or "(default)",
+        "last_transcript": (s.get("last_transcript") or "").replace("<", "&lt;"),
+        "last_response": (s.get("last_response") or "").replace("<", "&lt;"),
+    }
+    # Prefer bundled HTML if present, else inject CSS/JS into template
+    bundle_path = pkg.files("speech_mcp.resources.ui").joinpath("panel.bundled.html")
+    if bundle_path.is_file():
+        html = bundle_path.read_text(encoding="utf-8")
     else:
-        return "No active Speech UI found to close."
+        tpl = pkg.files("speech_mcp.resources.ui").joinpath("panel.html").read_text(encoding="utf-8")
+        css = pkg.files("speech_mcp.resources.ui").joinpath("panel.css").read_text(encoding="utf-8")
+        js = pkg.files("speech_mcp.resources.ui").joinpath("panel.js").read_text(encoding="utf-8")
+        html = tpl.replace("{{CSS}}", f"<style>{css}</style>").replace("{{JS}}", f"<script>{js}</script>")
+    # If extra JS provided, inject it just before closing </script> or append a new script tag
+    injected = (html
+        .replace("{{listening}}", v["listening"]) 
+        .replace("{{speaking}}", v["speaking"]) 
+        .replace("{{voice_pref}}", v["voice_pref"]) 
+        .replace("{{last_transcript}}", v["last_transcript"]) 
+        .replace("{{last_response}}", v["last_response"]) )
+    # SSE sidecar injection disabled (MCP-UI host should manage state/updates)
+    if extra_inline_js.strip():
+        if "</script>\n </div>\n" in injected:
+            injected = injected.replace("</script>\n </div>\n", f"{extra_inline_js}\n  </script>\n </div>\n")
+        else:
+            injected = injected.replace("</div>\n", f"  <script>\n{extra_inline_js}\n  </script>\n</div>\n")
+    return injected
+
+def _listen_panel_html(extra_inline_js: str = "") -> str:
+    from importlib import resources as pkg
+    s = state_manager.get_state()
+    v = {
+        "last_transcript": (s.get("last_transcript") or "").replace("<", "&lt;"),
+    }
+    tpl_path = pkg.files("speech_mcp.resources.ui").joinpath("listen_panel.bundled.html")
+    if tpl_path.is_file():
+        tpl = tpl_path.read_text(encoding="utf-8")
+    else:
+        # Fallback to base
+        tpl = _full_panel_html()
+    html = tpl.replace("{{last_transcript}}", v["last_transcript"]) \
+             .replace("{{CSS}}", "") \
+             .replace("{{JS}}", "")
+    if extra_inline_js.strip():
+        if "{{JS}}" in tpl:
+            html = tpl.replace("{{JS}}", f"<script>{extra_inline_js}</script>")
+        else:
+            html = html + f"\n<script>\n{extra_inline_js}\n</script>\n"
+    return html
+
+def _speak_panel_html(extra_inline_js: str = "") -> str:
+    from importlib import resources as pkg
+    s = state_manager.get_state()
+    v = {
+        "last_response": (s.get("last_response") or "").replace("<", "&lt;"),
+    }
+    tpl_path = pkg.files("speech_mcp.resources.ui").joinpath("speak_panel.bundled.html")
+    if tpl_path.is_file():
+        tpl = tpl_path.read_text(encoding="utf-8")
+    else:
+        # Fallback to base
+        tpl = _full_panel_html()
+    html = tpl.replace("{{last_response}}", v["last_response"]) \
+             .replace("{{CSS}}", "") \
+             .replace("{{JS}}", "")
+    if extra_inline_js.strip():
+        if "{{JS}}" in tpl:
+            html = tpl.replace("{{JS}}", f"<script>{extra_inline_js}</script>")
+        else:
+            html = html + f"\n<script>\n{extra_inline_js}\n</script>\n"
+    return html
+
+def _render_status_html() -> str:
+    """Render current status from state into a small HTML panel."""
+    state = state_manager.get_state()
+    listening = "true" if state.get("listening") else "false"
+    speaking = "true" if state.get("speaking") else "false"
+    last_transcript = (state.get("last_transcript") or "").replace("<", "&lt;")
+    last_response = (state.get("last_response") or "").replace("<", "&lt;")
+    voice_pref = state.get("voice_preference") or "(default)"
+    return f"""
+    <div style=\"padding: 16px; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial;\">
+      <h3 style=\"margin: 0 0 8px;\">Speech Status</h3>
+      <div style=\"font-size: 14px; line-height: 1.5;\">
+        <div><strong>Listening:</strong> {listening}</div>
+        <div><strong>Speaking:</strong> {speaking}</div>
+        <div><strong>Voice:</strong> {voice_pref}</div>
+        <div style=\"margin-top: 8px;\"><strong>Last transcript</strong></div>
+        <pre style=\"white-space: pre-wrap; background:#f8f9fa; padding:8px; border:1px solid #e9ecef; border-radius:6px;\">{last_transcript}</pre>
+        <div style=\"margin-top: 8px;\"><strong>Last response</strong></div>
+        <pre style=\"white-space: pre-wrap; background:#f8f9fa; padding:8px; border:1px solid #e9ecef; border-radius:6px;\">{last_response}</pre>
+      </div>
+    </div>
+    """
+
+def _controls_html() -> str:
+    """Interactive controls panel with intent buttons/dropdowns.
+
+    The client should forward postMessage({ type: 'intent', payload: { intent, params } })
+    to the server tool `ui_intent(intent: str, params: dict)`.
+    """
+    return """
+    <div style=\"padding: 16px; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial;\">
+      <h2 style=\"margin: 0 0 8px;\">Speech Controls</h2>
+      <p style=\"margin:0 0 12px; color:#444;\">Use these controls to start listening, speak text, and set the voice.</p>
+
+      <div style=\"display:flex; gap:8px; flex-wrap: wrap;\">
+        <button onclick=\"sendIntent('start_listening', {})\" style=\"background:#007cba; color:#fff; padding:8px 12px; border:none; border-radius:6px; cursor:pointer;\">Start Listening</button>
+        <button onclick=\"promptSpeak()\" style=\"background:#28a745; color:#fff; padding:8px 12px; border:none; border-radius:6px; cursor:pointer;\">Speak Text…</button>
+        <button onclick=\"sendIntent('stop', {})\" style=\"background:#6c757d; color:#fff; padding:8px 12px; border:none; border-radius:6px; cursor:pointer;\">Stop</button>
+      </div>
+
+      <div style=\"margin-top:12px;\">
+        <label for=\"voiceSelect\" style=\"font-size: 14px;\">Voice</label><br />
+        <select id=\"voiceSelect\" onchange=\"onVoiceChange(this.value)\" style=\"margin-top:4px; padding:6px 8px; border-radius:6px; border:1px solid #ced4da;\">
+          <option value=\"af_heart\">af_heart (default)</option>
+          <option value=\"am_michael\">am_michael</option>
+          <option value=\"bm_daniel\">bm_daniel</option>
+          <option value=\"bf_emma\">bf_emma</option>
+          <option value=\"ff_siwis\">ff_siwis</option>
+        </select>
+      </div>
+
+      <div id=\"uiStatus\" style=\"margin-top:12px; font-size:13px; color:#555;\"></div>
+    </div>
+
+    <script>
+      function sendIntent(intent, params) {
+        const status = document.getElementById('uiStatus');
+        if (status) {
+          status.textContent = `Intent: ${intent}  Params: ${JSON.stringify(params)}`;
+        }
+        if (window.parent) {
+          window.parent.postMessage({ type: 'intent', payload: { intent, params } }, '*');
+        }
+      }
+      function onVoiceChange(voice) { sendIntent('set_voice', { voice }); }
+      function promptSpeak() {
+        const text = window.prompt('Text to speak');
+        if (text && text.trim()) {
+          sendIntent('speak', { text: text.trim() });
+        }
+      }
+    </script>
+    """
+
+def _mini_widget_html() -> str:
+    """Render a compact status + quick controls widget.
+
+    Shows listening/speaking state and offers quick Start/Stop and Speak actions.
+    Includes size-change postMessages for host autosizing.
+    """
+    state = state_manager.get_state()
+    listening = "true" if state.get("listening") else "false"
+    speaking = "true" if state.get("speaking") else "false"
+    voice_pref = state.get("voice_preference") or "(default)"
+    return f"""
+    <div style=\"font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; display:flex; align-items:center; gap:10px; padding:8px 10px; border:1px solid #e5e7eb; border-radius:10px; background:#fff; color:#111827;\">
+      <div style=\"display:flex; align-items:center; gap:8px;\">
+        <span style=\"display:inline-flex; align-items:center; gap:6px;\">
+          <span title=\"Listening\" style=\"width:10px; height:10px; border-radius:50%; background:{'#10b981' if listening=='true' else '#d1d5db'}; display:inline-block;\"></span>
+          <span style=\"font-size:12px; color:#374151;\">Listening</span>
+        </span>
+        <span style=\"display:inline-flex; align-items:center; gap:6px;\">
+          <span title=\"Speaking\" style=\"width:10px; height:10px; border-radius:50%; background:{'#3b82f6' if speaking=='true' else '#d1d5db'}; display:inline-block;\"></span>
+          <span style=\"font-size:12px; color:#374151;\">Speaking</span>
+        </span>
+        <span style=\"font-size:12px; color:#6b7280;\">Voice: {voice_pref}</span>
+      </div>
+      <div style=\"margin-left:auto; display:flex; gap:6px;\">
+        <button onclick=\"sendIntent('start_listening', {{}})\" style=\"background:#10b981; color:#fff; border:none; border-radius:8px; padding:6px 10px; font-size:12px; cursor:pointer;\">Listen</button>
+        <button onclick=\"promptSpeak()\" style=\"background:#3b82f6; color:#fff; border:none; border-radius:8px; padding:6px 10px; font-size:12px; cursor:pointer;\">Speak…</button>
+        <button onclick=\"sendIntent('stop', {{}})\" style=\"background:#6b7280; color:#fff; border:none; border-radius:8px; padding:6px 10px; font-size:12px; cursor:pointer;\">Stop</button>
+      </div>
+      <div id=\"uiStatus\" style=\"display:none\"></div>
+    </div>
+    <script>
+      function postSize() {{
+        const h = document.documentElement.scrollHeight;
+        const w = document.documentElement.scrollWidth;
+        const payload = {{ height: h, width: w }};
+        if (window.parent) {{
+          window.parent.postMessage({{ type: 'ui-size-change', payload }}, '*');
+        }}
+      }}
+      let rafScheduled = false;
+      function scheduleSize() {{
+        if (rafScheduled) return;
+        rafScheduled = true;
+        requestAnimationFrame(() => {{ rafScheduled = false; postSize(); }});
+      }}
+      if ('ResizeObserver' in window) {{
+        const ro = new ResizeObserver(() => scheduleSize());
+        ro.observe(document.documentElement);
+        ro.observe(document.body);
+      }} else {{ window.addEventListener('resize', scheduleSize); }}
+      document.addEventListener('DOMContentLoaded', scheduleSize);
+      window.addEventListener('load', scheduleSize);
+      setTimeout(scheduleSize, 0);
+
+      function sendIntent(intent, params) {{
+        const status = document.getElementById('uiStatus');
+        if (status) {{ status.textContent = `Intent: ${'{'}intent{'}'} — ${'{'}JSON.stringify(params){'}'}`; }}
+        if (window.parent) {{
+          window.parent.postMessage({{ type: 'intent', payload: {{ intent, params }} }}, '*');
+        }}
+      }}
+      function promptSpeak() {{
+        const text = window.prompt('Text to speak');
+        if (text && text.trim()) {{ sendIntent('speak', {{ text: text.trim() }}); }}
+      }}
+    </script>
+    """
+
+ 
+
+ 
+
+
+ 
 
 @mcp.tool()
 def transcribe(file_path: str, include_timestamps: bool = False, detect_speakers: bool = False) -> str:
@@ -1582,11 +1754,7 @@ def usage_guide() -> str:
     
     ## How to Use
     
-    1. Launch the speech UI for visual feedback (optional but recommended):
-       ```
-       launch_ui()
-       ```
-       This starts the visual interface that shows when the microphone is active.
+    1. Use an MCP UI client to connect to this server for visual feedback.
        
     2. Start a conversation:
        ```
@@ -1607,11 +1775,7 @@ def usage_guide() -> str:
        ```
        This speaks the text but doesn't listen for a response, useful for announcements or confirmations.
        
-    5. Close the speech UI when done:
-       ```
-       close_ui()
-       ```
-       This gracefully closes the speech UI window when you're finished with voice interaction.
+    5. Close the UI from your MCP UI client when done.
        
     6. Transcribe audio/video files:
        ```
@@ -1673,8 +1837,7 @@ def usage_guide() -> str:
     
     - For best results, use a quiet environment and speak clearly
     - Kokoro TTS is automatically initialized on server start for faster response times
-    - Use the `launch_ui()` function to start the visual PyQt interface:
-      - The PyQt UI shows when the microphone is active and listening
+    - Use an MCP UI client (like mcp-ui) to view microphone status and activity:
       - A blue pulsing circle indicates active listening
       - A green circle indicates the system is speaking
       - Voice selection is available in the UI dropdown

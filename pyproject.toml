@@ -1,11 +1,12 @@
 [project]
 name = "speech-mcp"
-version = "1.1.1"
+version = "2.0.0"
 description = "Speech MCP Server with command-line interface and Kokoro TTS support"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "mcp[cli]>=1.2.0",
+    "mcp[cli]>=1.5.0",
+    "mcp-ui-server @ git+https://github.com/yannj-fr/mcp-ui@3a073000b41f8da4d039f18b47b656d0a524f386#subdirectory=sdks/python/server",
     "SpeechRecognition>=3.10.0",  # Fallback speech recognition
     "numpy>=1.24.0",
     "pyaudio>=0.2.13",
@@ -18,7 +19,7 @@ dependencies = [
     "soundfile>=0.12.1",  # For audio file handling and multi-speaker narration
     "torch",           # Required by Kokoro
     "misaki[en]",      # G2P library for English
-    "PyQt5>=5.15.0",   # Modern UI toolkit to replace tkinter
+    # PyQt UI removed in favor of external MCP UI client
     "pydantic>=2.7.2,<3.0.0",  # Explicitly specify Pydantic v2 to resolve conflict
     "ffmpeg>=1.4",
     "pip"
@@ -48,6 +49,12 @@ include = [
     "src/**/*.py",
     "src/**/resources/**/*",
 ]
+exclude = [
+    "src/speech_mcp/ui/**",
+    "src/speech_mcp/ui_command.txt",
+]
+[tool.hatch.metadata]
+allow-direct-references = true
 [tool.uv]
 no-build-isolation-package = ["kokoro"]
 
